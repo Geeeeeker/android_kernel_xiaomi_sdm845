@@ -3983,6 +3983,43 @@ err_lookup_state:
 	return ret;
 }
 
+static bool msm_swap_gnd_mic(struct snd_soc_codec *codec, bool active)
+{
+	int value = 0;
+	int ret = 0;
+	struct snd_soc_card *card = codec->component.card;
+	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+
+	if (!pdata)
+		return false;
+
+	if (!wcd_mbhc_cfg.enable_usbc_analog) {
+		/* if usbc is not defined, swap using us_euro_gpio_p */
+		if (pdata->us_euro_gpio_p) {
+			value = msm_cdc_pinctrl_get_state(
+						pdata->us_euro_gpio_p);
+			if (value)
+				msm_cdc_pinctrl_select_sleep_state(
+						pdata->us_euro_gpio_p);
+			else
+				msm_cdc_pinctrl_select_active_state(
+						pdata->us_euro_gpio_p);
+		} else if (pdata->us_euro_gpio >= 0) {
+			value = gpio_get_value_cansleep(
+						pdata->us_euro_gpio);
+			gpio_set_value_cansleep(
+					pdata->us_euro_gpio, !value);
+		}
+		pr_debug("%s: swap select switch %d to %d\n", __func__,
+			 value, !value);
+		ret = true;
+	} else {
+		/* if usbc is defined, swap using usbc_en2 */
+		ret = msm_usbc_swap_gnd_mic(codec, active);
+	}
+	return ret;
+}
+
 static int msm_afe_set_config(struct snd_soc_codec *codec)
 {
 	int ret = 0;
@@ -3994,6 +4031,18 @@ static int msm_afe_set_config(struct snd_soc_codec *codec)
 		return -EINVAL;
 	}
 
+	config_data = msm_codec_fn.get_afe_config_fn(codec,
+			AFE_CDC_REGISTERS_CONFIG);
+	if (config_data) {
+		ret = afe_set_config(AFE_CDC_REGISTERS_CONFIG, config_data, 0);
+		if (ret) {
+			dev_err(codec->dev,
+				"%s: Failed to set codec registers config %d\n",
+				__func__, ret);
+			return ret;
+		}
+	}
+	
 	config_data = msm_codec_fn.get_afe_config_fn(codec,
 			AFE_CDC_REGISTERS_CONFIG);
 	if (config_data) {
