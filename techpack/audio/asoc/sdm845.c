@@ -3983,17 +3983,6 @@ err_lookup_state:
 	return ret;
 }
 
-static bool msm_swap_gnd_mic(struct snd_soc_codec *codec, bool active)
-{
-	int value = 0;
-	int ret = 0;
-	struct snd_soc_card *card = codec->component.card;
-	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
-
-	if (!pdata)
-		return false;
-
-
 static int msm_afe_set_config(struct snd_soc_codec *codec)
 {
 	int ret = 0;
