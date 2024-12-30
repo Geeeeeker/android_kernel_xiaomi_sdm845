@@ -3993,32 +3993,6 @@ static bool msm_swap_gnd_mic(struct snd_soc_codec *codec, bool active)
 	if (!pdata)
 		return false;
 
-	if (!wcd_mbhc_cfg.enable_usbc_analog) {
-		/* if usbc is not defined, swap using us_euro_gpio_p */
-		if (pdata->us_euro_gpio_p) {
-			value = msm_cdc_pinctrl_get_state(
-						pdata->us_euro_gpio_p);
-			if (value)
-				msm_cdc_pinctrl_select_sleep_state(
-						pdata->us_euro_gpio_p);
-			else
-				msm_cdc_pinctrl_select_active_state(
-						pdata->us_euro_gpio_p);
-		} else if (pdata->us_euro_gpio >= 0) {
-			value = gpio_get_value_cansleep(
-						pdata->us_euro_gpio);
-			gpio_set_value_cansleep(
-					pdata->us_euro_gpio, !value);
-		}
-		pr_debug("%s: swap select switch %d to %d\n", __func__,
-			 value, !value);
-		ret = true;
-	} else {
-		/* if usbc is defined, swap using usbc_en2 */
-		ret = msm_usbc_swap_gnd_mic(codec, active);
-	}
-	return ret;
-}
 
 static int msm_afe_set_config(struct snd_soc_codec *codec)
 {
