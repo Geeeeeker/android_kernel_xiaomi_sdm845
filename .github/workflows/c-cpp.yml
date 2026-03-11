@@ -47,8 +47,8 @@ jobs:
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run:
           mkdir -p clang &&
-          curl -LSs "https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r487747c/-/archive/14.0/android_prebuilts_clang_host_linux-x86_clang-${{ env.AOSP_CLANG_VERSION }}-14.0.tar.gz" |
-          tar xz -C clang
+          git clone https://github.com/kmou424/proton-clang-11
+          mv proton-clang-11 clang
 
       - name: 缓存ccache
         uses: hendrikmuhs/ccache-action@v1.2
