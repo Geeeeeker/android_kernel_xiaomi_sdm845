@@ -47,7 +47,7 @@ jobs:
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run:
           mkdir -p clang &&
-          git clone https://github.com/kmou424/proton-clang-11
+          git clone https://github.com/kmou424/proton-clang-11 &&
           mv proton-clang-11 clang
 
       - name: 缓存ccache
