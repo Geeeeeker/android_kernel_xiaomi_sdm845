@@ -47,7 +47,7 @@ jobs:
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run:
           mkdir -p clang &&
-          curl -LSs "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.AOSP_TOOLCHAIN_BRANCH }}-release/clang-${{ env.AOSP_CLANG_VERSION }}.tar.gz" |
+          curl -LSs "https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r487747c/-/archive/14.0/android_prebuilts_clang_host_linux-x86_clang-${{ env.AOSP_CLANG_VERSION }}-14.0.tar.gz" |
           tar xz -C clang
 
       - name: 缓存ccache
