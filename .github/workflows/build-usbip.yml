@@ -19,7 +19,7 @@ jobs:
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      - name: Build usbip statically in arm64 container
+      - name: Build static usbip in arm64 container
         run: |
           mkdir -p ${{ github.workspace }}/output
 
@@ -31,7 +31,7 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装编译基础工具
+              # 安装编译工具及静态 libc（用于完全静态链接）
               apt update
               apt install -y \
                 build-essential \
@@ -43,55 +43,74 @@ jobs:
                 libncurses-dev \
                 wget \
                 xz-utils \
-                git
+                libc6-dev-static
 
               # ------------------------------------------------------------
-              # 1. 编译安装 eudev (静态 libudev)
+              # 1. 编译安装 eudev (提供 libudev 静态库)
               # ------------------------------------------------------------
               cd /tmp
               wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
               tar xzf eudev-3.2.14.tar.gz
               cd eudev-3.2.14
-              ./autogen.sh
-              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared --disable-manpages
+
+              # 生成 configure（若失败则尝试 autoreconf）
+              ./autogen.sh || autoreconf -i
+              if [ ! -f configure ]; then
+                echo 'ERROR: configure not generated'
+                exit 1
+              fi
+
+              # 配置为静态库，跳过 man 页面生成
+              ./configure \
+                --prefix=/usr \
+                --libdir=/usr/lib/aarch64-linux-gnu \
+                --enable-static \
+                --disable-shared \
+                --disable-manpages
+
               make -j\$(nproc)
               make install
 
               # ------------------------------------------------------------
-              # 2. 编译安装 OpenSSL (静态 libssl & libcrypto)
-              #    (添加 no-asm 避免 QEMU 模拟时汇编指令段错误，使用 -j1 串行编译)
+              # 2. 编译安装 OpenSSL (提供 libssl, libcrypto 静态库)
               # ------------------------------------------------------------
               cd /tmp
               wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
               tar xzf openssl-1.1.1w.tar.gz
               cd openssl-OpenSSL_1_1_1w
-              ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared no-asm
-              make -j1          # 串行编译防止段错误
+
+              # 配置仅生成静态库，并指定安装路径
+              ./config \
+                --prefix=/usr \
+                --openssldir=/etc/ssl \
+                --libdir=lib/aarch64-linux-gnu \
+                no-shared
+
+              # 使用单线程编译避免 QEMU 模拟下的段错误
+              make -j1
               make install
 
               # ------------------------------------------------------------
-              # 3. 下载内核源码并编译 usbip (静态链接)
+              # 3. 编译 USB/IP（静态链接）
               # ------------------------------------------------------------
               cd /workspace
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
               tar -xf linux-4.9.337.tar.xz
               cd linux-4.9.337/tools/usb/usbip
 
-              # 生成 configure
+              # 生成 configure 脚本
               ./autogen.sh
 
-              # 配置 (禁用警告转错误)
-              ./configure CFLAGS=\"-Wno-error -Wno-error=stringop-truncation\" --with-tcp-wrappers=no
-
-              # 手动修改 Makefile 强制链接静态库
-              # 在 src/Makefile 中为 usbip 和 usbipd 追加静态库文件
-              sed -i 's|^usbip_LDADD = \(.*\)|usbip_LDADD = \1 /usr/lib/aarch64-linux-gnu/libudev.a /usr/lib/aarch64-linux-gnu/libssl.a /usr/lib/aarch64-linux-gnu/libcrypto.a|' src/Makefile
-              sed -i 's|^usbipd_LDADD = \(.*\)|usbipd_LDADD = \1 /usr/lib/aarch64-linux-gnu/libudev.a /usr/lib/aarch64-linux-gnu/libssl.a /usr/lib/aarch64-linux-gnu/libcrypto.a|' src/Makefile
+              # 配置：添加 LDFLAGS=\"-static\" 以完全静态链接
+              ./configure \
+                CFLAGS=\"-Wno-error -Wno-error=stringop-truncation\" \
+                LDFLAGS=\"-static\" \
+                --with-tcp-wrappers=no
 
               # 编译
               make -j\$(nproc)
 
-              # 检查并复制二进制文件
+              # 复制生成的静态二进制文件
               echo \"=== Checking built binaries ===\"
               ls -la src/.libs/
               if [ ! -f src/.libs/usbip ] || [ ! -f src/.libs/usbipd ]; then
@@ -105,13 +124,13 @@ jobs:
       - name: Install aarch64 binutils for verification
         run: sudo apt-get install -y binutils-aarch64-linux-gnu
 
-      - name: Verify binaries are statically linked (except glibc)
+      - name: Verify binaries are statically linked
         run: |
           file output/usbip
           file output/usbipd
-          echo "=== Dynamic dependencies (should only show ld-linux and libc) ==="
-          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo "No NEEDED entries (fully static?)"
-          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo "No NEEDED entries (fully static?)"
+          echo "=== Dynamic dependencies (should be empty for static binaries) ==="
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo "No NEEDED entries -> statically linked"
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo "No NEEDED entries -> statically linked"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
