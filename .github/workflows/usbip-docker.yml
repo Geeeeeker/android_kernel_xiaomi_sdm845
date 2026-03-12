@@ -53,19 +53,24 @@ jobs:
               # 进入 usbip 源码目录
               cd linux-4.9.337/tools/usb/usbip
 
-              # 调试：检查 udev 库安装情况
-              echo '=== Checking libudev installation ==='
-              dpkg -L libudev-dev | grep -E '\.(a|so)' || true
-              echo '=== pkg-config info for libudev ==='
-              PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig pkg-config --libs --cflags libudev || true
-              echo '=== Searching for libudev.a ==='
-              find /usr -name 'libudev.a' 2>/dev/null || true
-
               # 生成 configure 脚本
               ./autogen.sh
 
-              # 设置 pkg-config 路径并配置（静态编译）
+              # 设置 pkg-config 路径，确保找到 libudev.pc
               export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH
+
+              # 获取静态链接 udev 所需的完整 flags
+              echo '=== udev static link flags ==='
+              UDEV_STATIC_LIBS=\$(pkg-config --static --libs libudev)
+              UDEV_CFLAGS=\$(pkg-config --cflags libudev)
+              echo \"UDEV_LIBS=\$UDEV_STATIC_LIBS\"
+              echo \"UDEV_CFLAGS=\$UDEV_CFLAGS\"
+
+              # 将 flags 导出，configure 会优先使用这些环境变量
+              export UDEV_CFLAGS=\"\$UDEV_CFLAGS\"
+              export UDEV_LIBS=\"\$UDEV_STATIC_LIBS\"
+
+              # 配置（静态编译）
               ./configure CFLAGS='-static' LDFLAGS='-static' --with-tcp-wrappers=no
 
               # 编译（使用所有 CPU 核心）
