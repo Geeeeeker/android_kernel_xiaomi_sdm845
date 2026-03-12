@@ -31,11 +31,12 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装基础编译工具
+              # 安装基础编译工具（包含 autotools 和 gperf）
               apt update
               apt install -y \
                 build-essential \
                 autoconf \
+                automake \
                 libtool \
                 pkg-config \
                 wget \
@@ -44,7 +45,8 @@ jobs:
                 bison \
                 libncurses-dev \
                 git \
-                ca-certificates
+                ca-certificates \
+                gperf
 
               # ------------------------------------------------------------
               # 1. 编译安装 eudev (提供 libudev 静态库)
@@ -53,6 +55,9 @@ jobs:
               wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
               tar xzf eudev-3.2.14.tar.gz
               cd eudev-3.2.14
+              # 生成 configure 脚本（GitHub 源码需要这一步）
+              ./autogen.sh
+              # 配置静态编译
               ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared
               make -j\$(nproc)
               make install
@@ -64,6 +69,7 @@ jobs:
               wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
               tar xzf openssl-1.1.1w.tar.gz
               cd openssl-OpenSSL_1_1_1w
+              # 配置仅生成静态库
               ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared
               make -j\$(nproc)
               make install
@@ -79,7 +85,7 @@ jobs:
               # 生成 configure 脚本
               ./autogen.sh
 
-              # 配置静态编译，禁用警告转错误
+              # 配置静态编译，并禁用因老代码与新版 GCC 导致的警告错误
               ./configure \
                 CFLAGS=\"-static -Wno-error\" \
                 LDFLAGS=\"-static\" \
@@ -101,7 +107,7 @@ jobs:
               file src/usbip
               file src/usbipd
 
-              echo '--- readelf output (first 20 bytes) ---'
+              echo '--- hexdump of first 20 bytes (should be ELF header) ---'
               hexdump -C src/usbip | head -n 2 || true
               hexdump -C src/usbipd | head -n 2 || true
 
@@ -117,7 +123,7 @@ jobs:
               echo 'Binaries copied to /workspace/output/'
             "
 
-      - name: Install aarch64 binutils for verification (host)
+      - name: Install aarch64 binutils for host verification
         run: sudo apt-get install -y binutils-aarch64-linux-gnu
 
       - name: Verify binaries on host
