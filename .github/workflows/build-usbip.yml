@@ -1,4 +1,4 @@
-name: Build static usbip for arm64 (QEMU + container)
+name: Build static usbip for arm64 (QEMU + container, compile deps from source)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      - name: Build static usbip in arm64 container
+      - name: Build usbip in arm64 container
         run: |
           mkdir -p ${{ github.workspace }}/output
 
@@ -31,19 +31,29 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装编译工具及静态 libc（用于完全静态链接）
+              # 安装所有必要的编译工具和依赖（包含 xsltproc 以支持 autogen.sh）
               apt update
               apt install -y \
                 build-essential \
                 autoconf \
+                automake \
                 libtool \
                 pkg-config \
+                wget \
+                xz-utils \
                 flex \
                 bison \
                 libncurses-dev \
-                wget \
-                xz-utils \
-                libc6-dev-static
+                git \
+                ca-certificates \
+                gperf \
+                libblkid-dev \
+                libselinux-dev \
+                libglib2.0-dev \
+                libgirepository1.0-dev \
+                util-linux \
+                xsltproc \
+                docbook-xsl
 
               # ------------------------------------------------------------
               # 1. 编译安装 eudev (提供 libudev 静态库)
@@ -53,21 +63,11 @@ jobs:
               tar xzf eudev-3.2.14.tar.gz
               cd eudev-3.2.14
 
-              # 生成 configure（若失败则尝试 autoreconf）
-              ./autogen.sh || autoreconf -i
-              if [ ! -f configure ]; then
-                echo 'ERROR: configure not generated'
-                exit 1
-              fi
+              # 生成 configure 脚本
+              ./autogen.sh
 
-              # 配置为静态库，跳过 man 页面生成
-              ./configure \
-                --prefix=/usr \
-                --libdir=/usr/lib/aarch64-linux-gnu \
-                --enable-static \
-                --disable-shared \
-                --disable-manpages
-
+              # 配置静态编译，并跳过 manpages 生成
+              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared --disable-manpages
               make -j\$(nproc)
               make install
 
@@ -78,59 +78,59 @@ jobs:
               wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
               tar xzf openssl-1.1.1w.tar.gz
               cd openssl-OpenSSL_1_1_1w
-
-              # 配置仅生成静态库，并指定安装路径
-              ./config \
-                --prefix=/usr \
-                --openssldir=/etc/ssl \
-                --libdir=lib/aarch64-linux-gnu \
-                no-shared
-
-              # 使用单线程编译避免 QEMU 模拟下的段错误
-              make -j1
+              ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared
+              make -j\$(nproc)
               make install
 
               # ------------------------------------------------------------
-              # 3. 编译 USB/IP（静态链接）
+              # 3. 下载内核源码并编译 usbip
               # ------------------------------------------------------------
               cd /workspace
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
-              tar -xf linux-4.9.337.tar.xz
+              tar xf linux-4.9.337.tar.xz
               cd linux-4.9.337/tools/usb/usbip
 
-              # 生成 configure 脚本
               ./autogen.sh
-
-              # 配置：添加 LDFLAGS=\"-static\" 以完全静态链接
               ./configure \
-                CFLAGS=\"-Wno-error -Wno-error=stringop-truncation\" \
+                CFLAGS=\"-static -Wno-error\" \
                 LDFLAGS=\"-static\" \
                 --with-tcp-wrappers=no
-
-              # 编译
               make -j\$(nproc)
 
-              # 复制生成的静态二进制文件
-              echo \"=== Checking built binaries ===\"
-              ls -la src/.libs/
-              if [ ! -f src/.libs/usbip ] || [ ! -f src/.libs/usbipd ]; then
-                echo \"ERROR: ELF binaries not found in src/.libs/\"
+              # ------------------------------------------------------------
+              # 4. 在容器内验证编译产物
+              # ------------------------------------------------------------
+              echo '=== Verification inside container ==='
+              if [ ! -f src/usbip ] || [ ! -f src/usbipd ]; then
+                echo 'ERROR: Binary files not found!'
                 exit 1
               fi
-              cp src/.libs/usbip /workspace/output/
-              cp src/.libs/usbipd /workspace/output/
+
+              file src/usbip
+              file src/usbipd
+              hexdump -C src/usbip | head -n 2 || true
+              hexdump -C src/usbipd | head -n 2 || true
+              readelf -d src/usbip 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
+              readelf -d src/usbipd 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
+
+              # ------------------------------------------------------------
+              # 5. 复制到输出目录
+              # ------------------------------------------------------------
+              cp src/usbip /workspace/output/
+              cp src/usbipd /workspace/output/
+              echo 'Binaries copied to /workspace/output/'
             "
 
-      - name: Install aarch64 binutils for verification
+      - name: Install aarch64 binutils for host verification
         run: sudo apt-get install -y binutils-aarch64-linux-gnu
 
-      - name: Verify binaries are statically linked
+      - name: Verify binaries on host
         run: |
+          echo '=== Host verification ==='
           file output/usbip
           file output/usbipd
-          echo "=== Dynamic dependencies (should be empty for static binaries) ==="
-          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo "No NEEDED entries -> statically linked"
-          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo "No NEEDED entries -> statically linked"
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo 'usbip: statically linked'
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo 'usbipd: statically linked'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
