@@ -1,4 +1,4 @@
-name: Build static usbip for arm64 (QEMU + ARM64 container)
+name: Build static usbip for arm64 (QEMU + container, compile deps from source)
 
 on:
   workflow_dispatch:
@@ -31,62 +31,75 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装编译依赖（包括静态库）
+              # 安装基础编译工具
               apt update
               apt install -y \
                 build-essential \
                 autoconf \
                 libtool \
                 pkg-config \
-                libudev-dev \
-                libssl-dev \
+                wget \
+                xz-utils \
                 flex \
                 bison \
                 libncurses-dev \
-                wget \
-                xz-utils \
-                libudev-static \
-                libssl-static
+                git \
+                ca-certificates
 
-              # 如果静态库包不存在（Ubuntu 官方仓库可能没有），则从源码编译 libudev
-              # 这里我们假设包存在；若不存在，需要额外处理（见下文注释）
+              # ------------------------------------------------------------
+              # 1. 编译安装 eudev (提供 libudev 静态库)
+              # ------------------------------------------------------------
+              cd /tmp
+              wget https://dev.gentoo.org/~blueness/eudev/eudev-3.2.14.tar.gz
+              tar xzf eudev-3.2.14.tar.gz
+              cd eudev-3.2.14
+              # 配置为静态编译并安装到系统目录
+              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared
+              make -j\$(nproc)
+              make install
 
-              # 下载内核源码
+              # ------------------------------------------------------------
+              # 2. 编译安装 OpenSSL (提供 libssl, libcrypto 静态库)
+              # ------------------------------------------------------------
+              cd /tmp
+              wget https://www.openssl.org/source/openssl-1.1.1w.tar.gz
+              tar xzf openssl-1.1.1w.tar.gz
+              cd openssl-1.1.1w
+              # 配置为仅生成静态库，安装到系统目录
+              ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared
+              make -j\$(nproc)
+              make install
+
+              # ------------------------------------------------------------
+              # 3. 下载内核源码并编译 usbip
+              # ------------------------------------------------------------
+              cd /workspace
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
-              tar -xf linux-4.9.337.tar.xz
-
-              # 进入 usbip 源码目录
+              tar xf linux-4.9.337.tar.xz
               cd linux-4.9.337/tools/usb/usbip
 
               # 生成 configure 脚本
               ./autogen.sh
 
-              # 获取静态链接 udev 和 ssl 所需的完整 flags
-              echo '=== udev static link flags ==='
-              UDEV_STATIC_LIBS=\$(pkg-config --static --libs libudev)
-              echo \"UDEV_STATIC_LIBS=\$UDEV_STATIC_LIBS\"
-
-              echo '=== libssl static link flags ==='
-              SSL_STATIC_LIBS=\$(pkg-config --static --libs libssl)
-              echo \"SSL_STATIC_LIBS=\$SSL_STATIC_LIBS\"
-
-              # 配置（静态编译）
-              # 将静态库标志添加到 LDFLAGS，同时保留 -static
+              # 配置静态编译
+              # 注意：pkg-config 会自动找到我们刚刚安装的静态库（因为 .pc 文件也已安装）
               ./configure \
                 CFLAGS=\"-static\" \
-                LDFLAGS=\"-static \$UDEV_STATIC_LIBS \$SSL_STATIC_LIBS\" \
-                --with-tcp-wrappers=no \
-                --host=aarch64-linux-gnu
+                LDFLAGS=\"-static\" \
+                --with-tcp-wrappers=no
 
-              # 编译（使用所有 CPU 核心）
+              # 编译（使用所有核心）
               make -j\$(nproc)
 
-              # 将编译好的二进制复制到输出目录
+              # 将生成的二进制复制到输出目录
               cp src/usbip /workspace/output/
               cp src/usbipd /workspace/output/
             "
 
-      - name: Verify binaries
+      - name: Install aarch64 binutils for verification
+        run: sudo apt-get install -y binutils-aarch64-linux-gnu
+
+      - name: Verify binaries are statically linked
         run: |
           file output/usbip
           file output/usbipd
