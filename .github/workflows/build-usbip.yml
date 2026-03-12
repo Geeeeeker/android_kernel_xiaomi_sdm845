@@ -31,7 +31,7 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装编译依赖（仅需动态库开发包）
+              # 安装编译依赖
               apt update
               apt install -y \
                 build-essential \
@@ -56,24 +56,23 @@ jobs:
               # 生成 configure 脚本
               ./autogen.sh
 
-              # 配置（动态编译，不指定 -static）
+              # 配置（动态编译，禁用 -Werror 以避免老代码的警告被当作错误）
               ./configure \
+                CFLAGS='-Wno-error' \
                 --with-tcp-wrappers=no \
                 --host=aarch64-linux-gnu
 
-              # 编译（使用所有 CPU 核心）
+              # 编译
               make -j\$(nproc)
 
-              # 将编译好的二进制复制到输出目录
+              # 将二进制复制到输出目录
               cp src/usbip /workspace/output/
               cp src/usbipd /workspace/output/
 
-              # 查看动态依赖（调试用）
+              # 查看动态依赖（容器内）
               echo '=== Shared library dependencies ==='
-              ldd src/usbip || echo 'ldd not available (cross-compiled?)'
-              # 在容器内可以直接运行 file 和 readelf
-              file src/usbip
               readelf -d src/usbip | grep NEEDED
+              readelf -d src/usbipd | grep NEEDED
             "
 
       - name: Install ARM64 binutils for verification (on host)
@@ -86,8 +85,8 @@ jobs:
           file output/usbip
           file output/usbipd
           echo "=== Dynamic dependencies (host verification) ==="
-          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo "No dynamic deps? (unexpected for dynamic build)"
-          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo "No dynamic deps? (unexpected for dynamic build)"
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
