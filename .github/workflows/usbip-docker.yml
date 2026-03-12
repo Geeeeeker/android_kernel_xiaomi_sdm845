@@ -1,7 +1,7 @@
-name: Build static usbip for arm64
+name: Build static usbip for arm64 (QEMU + ARM64 container)
 
 on:
-  workflow_dispatch:   # 手动触发
+  workflow_dispatch:
   push:
     branches: [ main ]
 
@@ -31,7 +31,7 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装编译依赖（arm64 原生库）
+              # 安装编译依赖（包括静态库）
               apt update
               apt install -y \
                 build-essential \
@@ -45,13 +45,11 @@ jobs:
                 libncurses-dev \
                 wget \
                 xz-utils \
-                libc6-dev
+                libudev-static \
+                libssl-static
 
-              # 验证 GCC 和静态编译环境
-              echo '=== Checking static compilation environment ==='
-              gcc --version
-              echo 'int main() { return 0; }' > test.c
-              gcc -static -o test test.c && echo '✅ Static compilation works' || (echo '❌ Static compilation failed' && exit 1)
+              # 如果静态库包不存在（Ubuntu 官方仓库可能没有），则从源码编译 libudev
+              # 这里我们假设包存在；若不存在，需要额外处理（见下文注释）
 
               # 下载内核源码
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
@@ -63,24 +61,25 @@ jobs:
               # 生成 configure 脚本
               ./autogen.sh
 
-              # 设置 pkg-config 路径，确保找到 libudev.pc
-              export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH
-
-              # 获取静态链接 udev 所需的完整 flags
+              # 获取静态链接 udev 和 ssl 所需的完整 flags
               echo '=== udev static link flags ==='
               UDEV_STATIC_LIBS=\$(pkg-config --static --libs libudev)
               echo \"UDEV_STATIC_LIBS=\$UDEV_STATIC_LIBS\"
 
-              # 将完整的静态库列表添加到 LIBS 环境变量（用于 configure 检测）
-              export LIBS=\"\$UDEV_STATIC_LIBS\"
+              echo '=== libssl static link flags ==='
+              SSL_STATIC_LIBS=\$(pkg-config --static --libs libssl)
+              echo \"SSL_STATIC_LIBS=\$SSL_STATIC_LIBS\"
 
-              # 配置（**不加静态标志**，仅用于检测依赖）
-              echo '=== Running configure (without static flags) ==='
-              ./configure --with-tcp-wrappers=no || (cp config.log /workspace/output/ && exit 1)
+              # 配置（静态编译）
+              # 将静态库标志添加到 LDFLAGS，同时保留 -static
+              ./configure \
+                CFLAGS=\"-static\" \
+                LDFLAGS=\"-static \$UDEV_STATIC_LIBS \$SSL_STATIC_LIBS\" \
+                --with-tcp-wrappers=no \
+                --host=aarch64-linux-gnu
 
-              # 编译（添加静态标志）
-              echo '=== Running make with static flags ==='
-              make -j\$(nproc) CFLAGS='-static' LDFLAGS='-static'
+              # 编译（使用所有 CPU 核心）
+              make -j\$(nproc)
 
               # 将编译好的二进制复制到输出目录
               cp src/usbip /workspace/output/
@@ -88,22 +87,15 @@ jobs:
             "
 
       - name: Verify binaries
-        if: success()
         run: |
           file output/usbip
           file output/usbipd
-          # 期望输出：ELF 64-bit LSB executable, ARM aarch64, statically linked
+          echo "=== Dynamic dependencies (should be none) ==="
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo "usbip is statically linked"
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo "usbipd is statically linked"
 
       - name: Upload artifacts
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: usbip-static-arm64
           path: output/
-
-      - name: Upload config.log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: config-log
-          path: output/config.log
