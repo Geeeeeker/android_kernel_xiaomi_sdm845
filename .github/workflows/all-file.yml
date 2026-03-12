@@ -31,7 +31,7 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装编译依赖
+              # 安装编译依赖（添加 bc、libelf-dev 等）
               apt update
               apt install -y \
                 build-essential \
@@ -47,7 +47,9 @@ jobs:
                 xz-utils \
                 kmod \
                 patchelf \
-                file
+                file \
+                bc \
+                libelf-dev
 
               # 下载内核源码
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
@@ -56,16 +58,16 @@ jobs:
 
               # 生成内核配置（启用 USB/IP 模块）
               make ARCH=arm64 defconfig
-              # 手动开启 USB/IP 相关选项（使用脚本或直接写入 .config）
+              # 手动开启 USB/IP 相关选项
               echo 'CONFIG_USBIP_CORE=m' >> .config
               echo 'CONFIG_USBIP_VHCI_HCD=m' >> .config
-              # 如有需要可启用调试
-              # echo 'CONFIG_USBIP_DEBUG=y' >> .config
-              # 更新依赖
+              # 更新依赖（自动处理所需的其他选项）
               make ARCH=arm64 olddefconfig
 
-              # 编译内核模块（仅编译 drivers/usb/usbip/ 下的模块）
+              # 准备模块构建环境
               make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+
+              # 编译 USB/IP 内核模块
               make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=drivers/usb/usbip modules
 
               # 复制生成的 .ko 文件到输出目录
