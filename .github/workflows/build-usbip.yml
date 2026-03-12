@@ -1,24 +1,28 @@
-name: Build static usbip for arm64
+name: Build static usbip for arm64 (Ubuntu 22.04)
 
 on:
-  workflow_dispatch:        # 允许手动触发
+  workflow_dispatch:   # 手动触发
   push:
-    branches: [ main ]      # 也可根据需要修改触发分支
+    branches: [ main ]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04   # 明确使用 Ubuntu 22.04
 
     steps:
-      - name: Checkout (dummy step to create workspace)
+      - name: Checkout (create workspace)
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Install dependencies and cross-compilation toolchain
+      - name: Add arm64 architecture and switch to ports.ubuntu.com
         run: |
           sudo dpkg --add-architecture arm64
+          # 将所有源替换为 ports.ubuntu.com（支持 arm64 和 amd64）
+          sudo sed -i 's|http://archive.ubuntu.com/ubuntu|http://ports.ubuntu.com/ubuntu-ports|g' /etc/apt/sources.list
+          sudo sed -i 's|http://security.ubuntu.com/ubuntu|http://ports.ubuntu.com/ubuntu-ports|g' /etc/apt/sources.list
           sudo apt update
+
+      - name: Install dependencies and cross toolchain
+        run: |
           sudo apt install -y \
             build-essential autoconf libtool pkg-config flex bison libncurses-dev \
             wget xz-utils \
@@ -33,23 +37,19 @@ jobs:
       - name: Configure and build usbip statically
         working-directory: linux-4.9.337/tools/usb/usbip
         run: |
-          # 确保 autogen.sh 可执行
           chmod +x autogen.sh
           ./autogen.sh
 
-          # 设置交叉编译环境变量
           export CC=aarch64-linux-gnu-gcc
           export AR=aarch64-linux-gnu-ar
           export CFLAGS="-static"
           export LDFLAGS="-static"
 
-          # 配置：禁用 tcp-wrappers，指定主机类型
           ./configure \
             --host=aarch64-linux-gnu \
             --with-tcp-wrappers=no \
             --prefix=/tmp/install
 
-          # 编译（使用所有CPU核心）
           make -j$(nproc)
 
       - name: Verify and strip binaries
@@ -58,7 +58,7 @@ jobs:
           file src/usbip
           file src/usbipd
           aarch64-linux-gnu-strip src/usbip src/usbipd
-          echo "Binary info after strip:"
+          echo "After strip:"
           file src/usbip
           file src/usbipd
 
