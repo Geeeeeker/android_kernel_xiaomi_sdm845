@@ -50,7 +50,7 @@ jobs:
               # 1. 编译安装 eudev (提供 libudev 静态库)
               # ------------------------------------------------------------
               cd /tmp
-              wget https://dev.gentoo.org/~blueness/eudev/eudev-3.2.14.tar.gz
+              wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz
               tar xzf eudev-3.2.14.tar.gz
               cd eudev-3.2.14
               # 配置为静态编译并安装到系统目录
