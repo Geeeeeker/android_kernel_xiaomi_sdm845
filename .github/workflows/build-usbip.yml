@@ -1,4 +1,4 @@
-name: Build static usbip for arm64 (QEMU + container, with gcc-10 and low parallelism)
+name: Build static usbip for arm64 (QEMU + container, fixed eudev manpage)
 
 on:
   workflow_dispatch:
@@ -36,6 +36,7 @@ jobs:
               apt install -y \
                 build-essential \
                 autoconf \
+                automake \
                 libtool \
                 pkg-config \
                 wget \
@@ -63,10 +64,9 @@ jobs:
               wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
               tar xzf eudev-3.2.14.tar.gz
               cd eudev-3.2.14
-              # 使用稳定的编译选项
-              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared \
-                CFLAGS=\"-O1 -w\"   # -O1 避免过度优化，-w 禁用所有警告（可选）
-              make -j2   # 降低并行度
+              # 配置为静态编译，禁用 manpages 避免依赖 xsltproc
+              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared --disable-manpages CFLAGS=\"-O1 -w\"
+              make -j2
               make install
 
               # ------------------------------------------------------------
@@ -76,8 +76,7 @@ jobs:
               wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
               tar xzf openssl-1.1.1w.tar.gz
               cd openssl-OpenSSL_1_1_1w
-              ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared \
-                CFLAGS=\"-O1 -w\"
+              ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared CFLAGS=\"-O1 -w\"
               make -j2
               make install
 
