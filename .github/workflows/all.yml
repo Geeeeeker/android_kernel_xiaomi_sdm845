@@ -1,0 +1,151 @@
+name: Build dynamic usbip for arm64 with all dependencies
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for arm64 emulation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+      - name: Build usbip and collect dependencies in arm64 container
+        run: |
+          mkdir -p ${{ github.workspace }}/output
+          mkdir -p ${{ github.workspace }}/output/libs
+
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            arm64v8/ubuntu:22.04 \
+            bash -c "
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+
+              # 安装编译依赖（arm64 原生动态库及工具）
+              apt update
+              apt install -y \
+                build-essential \
+                autoconf \
+                libtool \
+                pkg-config \
+                libudev-dev:arm64 \
+                libssl-dev:arm64 \
+                flex \
+                bison \
+                libncurses-dev \
+                wget \
+                xz-utils \
+                patchelf \
+                file
+
+              # 下载内核源码
+              wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
+              tar -xf linux-4.9.337.tar.xz
+
+              # 进入 usbip 源码目录
+              cd linux-4.9.337/tools/usb/usbip
+
+              # 生成 configure 脚本
+              ./autogen.sh
+
+              # 配置（动态编译，禁用警告转错误）
+              ./configure \
+                CFLAGS=\"-Wno-error -Wno-error=stringop-truncation\" \
+                --with-tcp-wrappers=no
+
+              # 编译
+              make -j\$(nproc)
+
+              # 创建输出目录并复制二进制
+              mkdir -p /workspace/output/bin
+              cp src/.libs/usbip /workspace/output/bin/
+              cp src/.libs/usbipd /workspace/output/bin/
+
+              # 复制 libusbip.so 库（由 libsrc 生成）
+              mkdir -p /workspace/output/libs
+              cp libsrc/.libs/libusbip.so.0* /workspace/output/libs/
+
+              # 分析二进制依赖并复制所有需要的共享库
+              cd /workspace/output
+              BINARIES=\"bin/usbip bin/usbipd libs/libusbip.so.0*\"
+              DEPS=\"\"
+
+              for file in \$BINARIES; do
+                if [ -f \"\$file\" ]; then
+                  echo \"Collecting dependencies for \$file...\"
+                  # 使用 readelf 获取 NEEDED 库名，然后用 ldconfig 或 find 定位
+                  needed=\$(aarch64-linux-gnu-readelf -d \"\$file\" | grep NEEDED | awk '{print \$5}' | tr -d '[]' || true)
+                  for lib in \$needed; do
+                    # 跳过已经处理过的
+                    if [[ \"\$DEPS\" != *\"\$lib\"* ]]; then
+                      DEPS=\"\$DEPS \$lib\"
+                    fi
+                  done
+                fi
+              done
+
+              # 去重并复制库文件
+              for lib in \$(echo \$DEPS | tr ' ' '\\n' | sort -u); do
+                echo \"Searching for library: \$lib\"
+                # 在标准库路径中查找（使用 ldconfig 或 find）
+                libpath=\$(ldconfig -p | grep \"\$lib (\" | head -1 | awk '{print \$NF}' || true)
+                if [ -z \"\$libpath\" ]; then
+                  # 如果 ldconfig 找不到，尝试 find
+                  libpath=\$(find /lib /usr/lib -name \"\$lib\" -type f 2>/dev/null | head -1 || true)
+                fi
+                if [ -n \"\$libpath\" ]; then
+                  echo \"Found: \$libpath\"
+                  cp -P \"\$libpath\" libs/ 2>/dev/null || cp \"\$libpath\" libs/
+                  # 如果是符号链接，尝试复制其目标文件（简单处理：复制所有同名但不同后缀的文件）
+                  for reallib in \$(find \"\$(dirname \"\$libpath\")\" -name \"\${lib%.so*}*\" -type f 2>/dev/null); do
+                    cp -n \"\$reallib\" libs/ 2>/dev/null || true
+                  done
+                else
+                  echo \"Warning: library \$lib not found\"
+                fi
+              done
+
+              # 特别确保 ld-linux 被复制
+              ld_linux=\"/lib/ld-linux-aarch64.so.1\"
+              if [ -f \"\$ld_linux\" ]; then
+                cp -P \"\$ld_linux\" libs/
+              fi
+
+              # 可选：使用 patchelf 设置 RPATH 为 $ORIGIN/../libs，使二进制可以在任何位置找到库（但这里暂时只打包，不修改）
+              echo \"All dependencies collected.\"
+            "
+
+      - name: Install aarch64 binutils for verification (on host)
+        run: sudo apt-get install -y binutils-aarch64-linux-gnu file
+
+      - name: Verify collected files
+        run: |
+          echo "=== Collected binaries ==="
+          file output/bin/usbip output/bin/usbipd
+          echo "=== Collected libraries ==="
+          ls -la output/libs/
+          echo "=== Dependencies of usbip (should all be within libs/) ==="
+          LD_LIBRARY_PATH=output/libs aarch64-linux-gnu-readelf -d output/bin/usbip | grep NEEDED
+
+      - name: Create distribution archive
+        run: |
+          cd output
+          tar czf ../usbip-arm64-bundle.tar.gz .
+          cd ..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: usbip-dynamic-arm64-with-deps
+          path: usbip-arm64-bundle.tar.gz
