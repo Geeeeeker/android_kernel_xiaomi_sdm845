@@ -48,28 +48,22 @@ jobs:
 
               # ------------------------------------------------------------
               # 1. 编译安装 eudev (提供 libudev 静态库)
-              #    使用 GitHub 上的官方发布包
               # ------------------------------------------------------------
               cd /tmp
               wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
               tar xzf eudev-3.2.14.tar.gz
-              # GitHub 源码解压后目录名通常是 eudev-3.2.14
               cd eudev-3.2.14
-              # 配置为静态编译并安装到系统目录
               ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared
               make -j\$(nproc)
               make install
 
               # ------------------------------------------------------------
               # 2. 编译安装 OpenSSL (提供 libssl, libcrypto 静态库)
-              #    使用 GitHub 上的 OpenSSL 官方镜像
               # ------------------------------------------------------------
               cd /tmp
               wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
               tar xzf openssl-1.1.1w.tar.gz
-              # GitHub 源码解压后目录名是 openssl-OpenSSL_1_1_1w
               cd openssl-OpenSSL_1_1_1w
-              # 配置为仅生成静态库，安装到系统目录
               ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared
               make -j\$(nproc)
               make install
@@ -85,31 +79,55 @@ jobs:
               # 生成 configure 脚本
               ./autogen.sh
 
-              # 配置静态编译，并禁用因老代码与新版 GCC 导致的警告错误
-              # 添加 CFLAGS=\"-Wno-error\" 忽略所有警告（也可针对性添加 -Wno-error=stringop-truncation）
+              # 配置静态编译，禁用警告转错误
               ./configure \
                 CFLAGS=\"-static -Wno-error\" \
                 LDFLAGS=\"-static\" \
                 --with-tcp-wrappers=no
 
-              # 编译（使用所有核心）
+              # 编译
               make -j\$(nproc)
 
-              # 将生成的二进制复制到输出目录
+              # ------------------------------------------------------------
+              # 4. 在容器内验证编译产物
+              # ------------------------------------------------------------
+              echo '=== Verification inside container ==='
+              if [ ! -f src/usbip ] || [ ! -f src/usbipd ]; then
+                echo 'ERROR: Binary files not found!'
+                exit 1
+              fi
+
+              echo '--- file output ---'
+              file src/usbip
+              file src/usbipd
+
+              echo '--- readelf output (first 20 bytes) ---'
+              hexdump -C src/usbip | head -n 2 || true
+              hexdump -C src/usbipd | head -n 2 || true
+
+              echo '--- dynamic dependencies (if any) ---'
+              readelf -d src/usbip 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
+              readelf -d src/usbipd 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
+
+              # ------------------------------------------------------------
+              # 5. 复制到输出目录
+              # ------------------------------------------------------------
               cp src/usbip /workspace/output/
               cp src/usbipd /workspace/output/
+              echo 'Binaries copied to /workspace/output/'
             "
 
-      - name: Install aarch64 binutils for verification
+      - name: Install aarch64 binutils for verification (host)
         run: sudo apt-get install -y binutils-aarch64-linux-gnu
 
-      - name: Verify binaries are statically linked
+      - name: Verify binaries on host
         run: |
+          echo '=== Host verification ==='
           file output/usbip
           file output/usbipd
-          echo "=== Dynamic dependencies (should be none) ==="
-          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo "usbip is statically linked"
-          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo "usbipd is statically linked"
+          echo '--- readelf output ---'
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo 'usbip: statically linked'
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo 'usbipd: statically linked'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
