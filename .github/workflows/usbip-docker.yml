@@ -70,17 +70,16 @@ jobs:
               # 获取静态链接 udev 所需的完整 flags
               echo '=== udev static link flags ==='
               UDEV_STATIC_LIBS=\$(pkg-config --static --libs libudev)
-              UDEV_CFLAGS=\$(pkg-config --cflags libudev)
-              echo \"UDEV_LIBS=\$UDEV_STATIC_LIBS\"
-              echo \"UDEV_CFLAGS=\$UDEV_CFLAGS\"
+              echo \"UDEV_STATIC_LIBS=\$UDEV_STATIC_LIBS\"
 
-              # 将 flags 导出，configure 会优先使用这些环境变量
-              export UDEV_CFLAGS=\"\$UDEV_CFLAGS\"
-              export UDEV_LIBS=\"\$UDEV_STATIC_LIBS\"
+              # 关键：将完整的静态库列表添加到 LIBS 环境变量
+              export LIBS=\"\$UDEV_STATIC_LIBS\"
+              export CFLAGS=\"-static\"
+              export LDFLAGS=\"-static\"
 
               # 配置（静态编译），如果失败则保存 config.log
               echo '=== Running configure ==='
-              ./configure CFLAGS='-static' LDFLAGS='-static' --with-tcp-wrappers=no || (cp config.log /workspace/output/ && exit 1)
+              ./configure --with-tcp-wrappers=no || (cp config.log /workspace/output/ && exit 1)
 
               # 编译（使用所有 CPU 核心）
               make -j\$(nproc)
@@ -98,7 +97,7 @@ jobs:
           # 期望输出：ELF 64-bit LSB executable, ARM aarch64, statically linked
 
       - name: Upload artifacts
-        if: always()   # 即使构建失败也上传 config.log 等
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: usbip-static-arm64
