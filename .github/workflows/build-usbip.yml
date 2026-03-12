@@ -28,10 +28,10 @@ jobs:
             -w /workspace \
             arm64v8/ubuntu:22.04 \
             bash -c "
-              set -e  # 遇到错误立即退出
+              set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装基础编译工具及eudev可能需要的依赖
+              # 安装所有必要的编译工具和依赖（包含 xsltproc 以支持 autogen.sh）
               apt update
               apt install -y \
                 build-essential \
@@ -50,24 +50,39 @@ jobs:
                 libblkid-dev \
                 libselinux-dev \
                 libglib2.0-dev \
-                libgirepository1.0-dev
+                libgirepository1.0-dev \
+                util-linux \
+                xsltproc \
+                docbook-xsl
 
               # ------------------------------------------------------------
-              # 1. 编译安装 eudev (提供 libudev 静态库)
+              # 1. 编译安装 eudev (提供 libudev 静态库) - 增加 --disable-manpages
               # ------------------------------------------------------------
               cd /tmp
               wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
               tar xzf eudev-3.2.14.tar.gz
               cd eudev-3.2.14
-              echo '=== Running autogen.sh for eudev ==='
+
+              echo '=== Current directory content before autogen ==='
+              ls -la
+
+              echo '=== Running autogen.sh ==='
               ./autogen.sh
-              # 检查configure是否生成
+              AUTOGEN_EXIT_CODE=\$?
+              echo \"autogen.sh exit code: \$AUTOGEN_EXIT_CODE\"
+
               if [ ! -f configure ]; then
-                echo 'ERROR: configure not generated after autogen.sh'
-                exit 1
+                echo '=== autogen.sh did not produce configure. Attempting autoreconf -i ==='
+                autoreconf -i
+                if [ ! -f configure ]; then
+                  echo 'ERROR: configure still not generated after autoreconf.'
+                  exit 1
+                fi
               fi
-              echo '=== Configuring eudev ==='
-              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared
+
+              echo '=== configure generated successfully ==='
+              # 关键修改：添加 --disable-manpages 跳过 man 页面生成
+              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared --disable-manpages
               make -j\$(nproc)
               make install
 
@@ -78,7 +93,6 @@ jobs:
               wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
               tar xzf openssl-1.1.1w.tar.gz
               cd openssl-OpenSSL_1_1_1w
-              # 配置仅生成静态库
               ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared
               make -j\$(nproc)
               make install
@@ -91,15 +105,11 @@ jobs:
               tar xf linux-4.9.337.tar.xz
               cd linux-4.9.337/tools/usb/usbip
 
-              # 生成 configure 脚本
               ./autogen.sh
-              # 配置静态编译，并禁用因老代码与新版 GCC 导致的警告错误
               ./configure \
                 CFLAGS=\"-static -Wno-error\" \
                 LDFLAGS=\"-static\" \
                 --with-tcp-wrappers=no
-
-              # 编译
               make -j\$(nproc)
 
               # ------------------------------------------------------------
@@ -111,15 +121,10 @@ jobs:
                 exit 1
               fi
 
-              echo '--- file output ---'
               file src/usbip
               file src/usbipd
-
-              echo '--- hexdump of first 20 bytes (should be ELF header) ---'
               hexdump -C src/usbip | head -n 2 || true
               hexdump -C src/usbipd | head -n 2 || true
-
-              echo '--- dynamic dependencies (if any) ---'
               readelf -d src/usbip 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
               readelf -d src/usbipd 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
 
@@ -139,7 +144,6 @@ jobs:
           echo '=== Host verification ==='
           file output/usbip
           file output/usbipd
-          echo '--- readelf output ---'
           aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo 'usbip: statically linked'
           aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo 'usbipd: statically linked'
 
