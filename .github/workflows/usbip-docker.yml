@@ -19,9 +19,10 @@ jobs:
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-            - name: Build usbip in arm64 container
+      - name: Build usbip in arm64 container
         run: |
           mkdir -p ${{ github.workspace }}/output
+
           docker run --rm --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
@@ -29,22 +30,21 @@ jobs:
             bash -c "
               set -e
               export DEBIAN_FRONTEND=noninteractive
+
+              # 安装编译依赖（arm64 原生库）
               apt update
               apt install -y \
-                build-essential autoconf libtool pkg-config \
-                libudev-dev libssl-dev flex bison libncurses-dev \
-                wget xz-utils
-              wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
-              tar -xf linux-4.9.337.tar.xz
-              cd linux-4.9.337/tools/usb/usbip
-              ./autogen.sh
-              # 注意：这里不再传递 LDFLAGS='-static' 给 configure
-              ./configure CFLAGS='-static' --with-tcp-wrappers=no
-              # 在 make 时通过 LDFLAGS 强制静态链接
-              make LDFLAGS='-static' -j\$(nproc)
-              cp src/usbip /workspace/output/
-              cp src/usbipd /workspace/output/
-            "
+                build-essential \
+                autoconf \
+                libtool \
+                pkg-config \
+                libudev-dev \
+                libssl-dev \
+                flex \
+                bison \
+                libncurses-dev \
+                wget \
+                xz-utils
 
               # 下载内核源码
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
@@ -53,9 +53,22 @@ jobs:
               # 进入 usbip 源码目录
               cd linux-4.9.337/tools/usb/usbip
 
-              # 静态编译
+              # 调试：检查 udev 库安装情况
+              echo '=== Checking libudev installation ==='
+              dpkg -L libudev-dev | grep -E '\.(a|so)' || true
+              echo '=== pkg-config info for libudev ==='
+              PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig pkg-config --libs --cflags libudev || true
+              echo '=== Searching for libudev.a ==='
+              find /usr -name 'libudev.a' 2>/dev/null || true
+
+              # 生成 configure 脚本
               ./autogen.sh
+
+              # 设置 pkg-config 路径并配置（静态编译）
+              export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH
               ./configure CFLAGS='-static' LDFLAGS='-static' --with-tcp-wrappers=no
+
+              # 编译（使用所有 CPU 核心）
               make -j\$(nproc)
 
               # 将编译好的二进制复制到输出目录
@@ -67,7 +80,7 @@ jobs:
         run: |
           file output/usbip
           file output/usbipd
-          # 应显示：ELF 64-bit LSB executable, ARM aarch64, statically linked
+          # 期望输出：ELF 64-bit LSB executable, ARM aarch64, statically linked
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
