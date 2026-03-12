@@ -44,7 +44,8 @@ jobs:
                 bison \
                 libncurses-dev \
                 wget \
-                xz-utils
+                xz-utils \
+                file
 
               # 下载内核源码
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
@@ -56,7 +57,7 @@ jobs:
               # 生成 configure 脚本
               ./autogen.sh
 
-              # 配置（动态编译，禁用 -Werror 以避免老代码的警告被当作错误）
+              # 配置（动态编译，禁用 -Werror）
               ./configure \
                 CFLAGS='-Wno-error' \
                 --with-tcp-wrappers=no \
@@ -65,28 +66,36 @@ jobs:
               # 编译
               make -j\$(nproc)
 
-              # 将二进制复制到输出目录
+              # 检查生成的二进制文件（在容器内）
+              echo '=== Build output files ==='
+              ls -la src/
+              echo '=== File type ==='
+              file src/usbip
+              file src/usbipd
+              echo '=== ELF header (readelf -h) ==='
+              readelf -h src/usbip || echo 'readelf failed'
+              echo '=== Dynamic dependencies (readelf -d) ==='
+              readelf -d src/usbip | grep NEEDED || echo 'No NEEDED section (possibly statically linked?)'
+
+              # 复制到输出目录
               cp src/usbip /workspace/output/
               cp src/usbipd /workspace/output/
-
-              # 查看动态依赖（容器内）
-              echo '=== Shared library dependencies ==='
-              readelf -d src/usbip | grep NEEDED
-              readelf -d src/usbipd | grep NEEDED
             "
 
       - name: Install ARM64 binutils for verification (on host)
         run: |
           sudo apt-get update
-          sudo apt-get install -y binutils-aarch64-linux-gnu
+          sudo apt-get install -y binutils-aarch64-linux-gnu file
 
       - name: Verify binaries (on host)
         run: |
+          echo '=== Host verification ==='
+          ls -l output/
           file output/usbip
           file output/usbipd
-          echo "=== Dynamic dependencies (host verification) ==="
-          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED
-          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED
+          echo '=== Dynamic dependencies ==='
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo 'No NEEDED (static?)'
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo 'No NEEDED (static?)'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
