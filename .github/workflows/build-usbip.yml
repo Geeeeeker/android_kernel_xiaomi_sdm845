@@ -1,71 +1,68 @@
-name: Build static usbip for arm64 (Ubuntu 22.04)
+name: Build static usbip & usbipd for ARM64
 
 on:
-  workflow_dispatch:   # 手动触发
+  workflow_dispatch:        # 支持手动触发
   push:
-    branches: [ main ]
+    branches: [ main ]      # 也可按需修改触发分支
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # 明确使用 Ubuntu 22.04
+    runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout (create workspace)
-        uses: actions/checkout@v4
-
-      - name: Add arm64 architecture and switch to ports.ubuntu.com
+      # 1. 安装必要的编译工具和依赖
+      - name: Install dependencies
         run: |
-          sudo dpkg --add-architecture arm64
-          # 将所有源替换为 ports.ubuntu.com（支持 arm64 和 amd64）
-          sudo sed -i 's|http://archive.ubuntu.com/ubuntu|http://ports.ubuntu.com/ubuntu-ports|g' /etc/apt/sources.list
-          sudo sed -i 's|http://security.ubuntu.com/ubuntu|http://ports.ubuntu.com/ubuntu-ports|g' /etc/apt/sources.list
-          sudo apt update
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            crossbuild-essential-arm64 \
+            flex bison \
+            libssl-dev \
+            bc \
+            kmod \
+            cpio \
+            wget \
+            xz-utils \
+            file
 
-      - name: Install dependencies and cross toolchain
-        run: |
-          sudo apt install -y \
-            build-essential autoconf libtool pkg-config flex bison libncurses-dev \
-            wget xz-utils \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            libudev-dev:arm64 libssl-dev:arm64
-
-      - name: Download Linux kernel 4.9.337 source
+      # 2. 下载指定的内核源码包
+      - name: Download Linux kernel source
         run: |
           wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
           tar -xf linux-4.9.337.tar.xz
 
-      - name: Configure and build usbip statically
+      # 3. 生成基础内核配置（用于产生必要的头文件）
+      - name: Prepare kernel config
+        working-directory: linux-4.9.337
+        run: |
+          make ARCH=arm64 defconfig
+
+      # 4. 静态交叉编译 usbip 和 usbipd
+      - name: Build usbip and usbipd statically for arm64
         working-directory: linux-4.9.337/tools/usb/usbip
         run: |
-          chmod +x autogen.sh
-          ./autogen.sh
+          make CROSS_COMPILE=aarch64-linux-gnu- \
+               ARCH=arm64 \
+               CFLAGS="-pthread" \
+               LDFLAGS="-static" \
+               -j$(nproc)
 
-          export CC=aarch64-linux-gnu-gcc
-          export AR=aarch64-linux-gnu-ar
-          export CFLAGS="-static"
-          export LDFLAGS="-static"
-
-          ./configure \
-            --host=aarch64-linux-gnu \
-            --with-tcp-wrappers=no \
-            --prefix=/tmp/install
-
-          make -j$(nproc)
-
-      - name: Verify and strip binaries
-        working-directory: linux-4.9.337/tools/usb/usbip
+      # 5. 验证生成的二进制文件
+      - name: Check binaries
         run: |
-          file src/usbip
-          file src/usbipd
-          aarch64-linux-gnu-strip src/usbip src/usbipd
-          echo "After strip:"
-          file src/usbip
-          file src/usbipd
+          echo "=== File info ==="
+          file linux-4.9.337/tools/usb/usbip/usbip
+          file linux-4.9.337/tools/usb/usbip/usbipd
+          echo "=== Dynamic dependencies (should be none for static) ==="
+          aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbip | grep NEEDED || echo "usbip: no dynamic deps"
+          aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbipd | grep NEEDED || echo "usbipd: no dynamic deps"
 
+      # 6. 上传构建产物
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: usbip-static-arm64
           path: |
-            linux-4.9.337/tools/usb/usbip/src/usbip
-            linux-4.9.337/tools/usb/usbip/src/usbipd
+            linux-4.9.337/tools/usb/usbip/usbip
+            linux-4.9.337/tools/usb/usbip/usbipd
