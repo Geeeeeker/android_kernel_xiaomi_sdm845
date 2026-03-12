@@ -31,7 +31,7 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装编译依赖（arm64 原生库，动态版本）
+              # 安装编译依赖（arm64 原生动态库）
               apt update
               apt install -y \
                 build-essential \
@@ -61,18 +61,26 @@ jobs:
                 CFLAGS=\"-Wno-error -Wno-error=stringop-truncation\" \
                 --with-tcp-wrappers=no
 
-              # 编译（使用所有 CPU 核心）
+              # 编译
               make -j\$(nproc)
 
-              # 将编译好的二进制复制到输出目录
-              cp src/usbip /workspace/output/
-              cp src/usbipd /workspace/output/
+              # 检查并复制真正的二进制文件（位于 .libs/ 下）
+              echo \"=== Checking built binaries ===\"
+              ls -la src/.libs/
+              if [ ! -f src/.libs/usbip ] || [ ! -f src/.libs/usbipd ]; then
+                echo \"ERROR: ELF binaries not found in src/.libs/\"
+                exit 1
+              fi
+
+              # 复制真正的 ELF 二进制文件
+              cp src/.libs/usbip /workspace/output/
+              cp src/.libs/usbipd /workspace/output/
             "
 
       - name: Install aarch64 binutils for verification
         run: sudo apt-get install -y binutils-aarch64-linux-gnu
 
-      - name: Verify binaries are dynamically linked
+      - name: Verify binaries are dynamically linked ELF
         run: |
           file output/usbip
           file output/usbipd
