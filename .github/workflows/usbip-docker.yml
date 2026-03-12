@@ -47,12 +47,11 @@ jobs:
                 xz-utils \
                 libc6-dev
 
-              # 验证 GCC 能否正常编译
-              echo '=== Checking GCC compilation ==='
+              # 验证 GCC 和静态编译环境
+              echo '=== Checking static compilation environment ==='
               gcc --version
               echo 'int main() { return 0; }' > test.c
-              gcc -o test test.c
-              ./test && echo '✅ Simple compilation works' || (echo '❌ Simple compilation failed' && exit 1)
+              gcc -static -o test test.c && echo '✅ Static compilation works' || (echo '❌ Static compilation failed' && exit 1)
 
               # 下载内核源码
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
@@ -72,17 +71,16 @@ jobs:
               UDEV_STATIC_LIBS=\$(pkg-config --static --libs libudev)
               echo \"UDEV_STATIC_LIBS=\$UDEV_STATIC_LIBS\"
 
-              # 关键：将完整的静态库列表添加到 LIBS 环境变量
+              # 将完整的静态库列表添加到 LIBS 环境变量（用于 configure 检测）
               export LIBS=\"\$UDEV_STATIC_LIBS\"
-              export CFLAGS=\"-static\"
-              export LDFLAGS=\"-static\"
 
-              # 配置（静态编译），如果失败则保存 config.log
-              echo '=== Running configure ==='
+              # 配置（**不加静态标志**，仅用于检测依赖）
+              echo '=== Running configure (without static flags) ==='
               ./configure --with-tcp-wrappers=no || (cp config.log /workspace/output/ && exit 1)
 
-              # 编译（使用所有 CPU 核心）
-              make -j\$(nproc)
+              # 编译（添加静态标志）
+              echo '=== Running make with static flags ==='
+              make -j\$(nproc) CFLAGS='-static' LDFLAGS='-static'
 
               # 将编译好的二进制复制到输出目录
               cp src/usbip /workspace/output/
