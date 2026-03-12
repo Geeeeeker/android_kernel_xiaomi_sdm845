@@ -1,4 +1,4 @@
-name: Build static usbip for arm64 (QEMU + container, compile deps from source)
+name: Build dynamic usbip for arm64 (QEMU + container)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      - name: Build usbip in arm64 container
+      - name: Build usbip in arm64 container (dynamic linking)
         run: |
           mkdir -p ${{ github.workspace }}/output
 
@@ -31,112 +31,57 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装基础编译工具（包含 autotools 和 gperf）
+              # 安装编译依赖（arm64 原生库，动态版本）
               apt update
               apt install -y \
                 build-essential \
                 autoconf \
-                automake \
                 libtool \
                 pkg-config \
-                wget \
-                xz-utils \
+                libudev-dev:arm64 \
+                libssl-dev:arm64 \
                 flex \
                 bison \
                 libncurses-dev \
-                git \
-                ca-certificates \
-                gperf
+                wget \
+                xz-utils
 
-              # ------------------------------------------------------------
-              # 1. 编译安装 eudev (提供 libudev 静态库)
-              # ------------------------------------------------------------
-              cd /tmp
-              wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
-              tar xzf eudev-3.2.14.tar.gz
-              cd eudev-3.2.14
-              # 生成 configure 脚本（GitHub 源码需要这一步）
-              ./autogen.sh
-              # 配置静态编译
-              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared
-              make -j\$(nproc)
-              make install
-
-              # ------------------------------------------------------------
-              # 2. 编译安装 OpenSSL (提供 libssl, libcrypto 静态库)
-              # ------------------------------------------------------------
-              cd /tmp
-              wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
-              tar xzf openssl-1.1.1w.tar.gz
-              cd openssl-OpenSSL_1_1_1w
-              # 配置仅生成静态库
-              ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared
-              make -j\$(nproc)
-              make install
-
-              # ------------------------------------------------------------
-              # 3. 下载内核源码并编译 usbip
-              # ------------------------------------------------------------
-              cd /workspace
+              # 下载内核源码
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
-              tar xf linux-4.9.337.tar.xz
+              tar -xf linux-4.9.337.tar.xz
+
+              # 进入 usbip 源码目录
               cd linux-4.9.337/tools/usb/usbip
 
               # 生成 configure 脚本
               ./autogen.sh
 
-              # 配置静态编译，并禁用因老代码与新版 GCC 导致的警告错误
+              # 配置（动态编译，禁用警告转错误）
               ./configure \
-                CFLAGS=\"-static -Wno-error\" \
-                LDFLAGS=\"-static\" \
+                CFLAGS=\"-Wno-error -Wno-error=stringop-truncation\" \
                 --with-tcp-wrappers=no
 
-              # 编译
+              # 编译（使用所有 CPU 核心）
               make -j\$(nproc)
 
-              # ------------------------------------------------------------
-              # 4. 在容器内验证编译产物
-              # ------------------------------------------------------------
-              echo '=== Verification inside container ==='
-              if [ ! -f src/usbip ] || [ ! -f src/usbipd ]; then
-                echo 'ERROR: Binary files not found!'
-                exit 1
-              fi
-
-              echo '--- file output ---'
-              file src/usbip
-              file src/usbipd
-
-              echo '--- hexdump of first 20 bytes (should be ELF header) ---'
-              hexdump -C src/usbip | head -n 2 || true
-              hexdump -C src/usbipd | head -n 2 || true
-
-              echo '--- dynamic dependencies (if any) ---'
-              readelf -d src/usbip 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
-              readelf -d src/usbipd 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
-
-              # ------------------------------------------------------------
-              # 5. 复制到输出目录
-              # ------------------------------------------------------------
+              # 将编译好的二进制复制到输出目录
               cp src/usbip /workspace/output/
               cp src/usbipd /workspace/output/
-              echo 'Binaries copied to /workspace/output/'
             "
 
-      - name: Install aarch64 binutils for host verification
+      - name: Install aarch64 binutils for verification
         run: sudo apt-get install -y binutils-aarch64-linux-gnu
 
-      - name: Verify binaries on host
+      - name: Verify binaries are dynamically linked
         run: |
-          echo '=== Host verification ==='
           file output/usbip
           file output/usbipd
-          echo '--- readelf output ---'
-          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo 'usbip: statically linked'
-          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo 'usbipd: statically linked'
+          echo "=== Dynamic dependencies ==="
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: usbip-static-arm64
+          name: usbip-dynamic-arm64
           path: output/
