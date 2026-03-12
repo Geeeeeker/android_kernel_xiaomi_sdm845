@@ -1,25 +1,118 @@
-# ------------------------------------------------------------
-# 1. 编译安装 eudev (提供 libudev 静态库) - 使用 GitHub 源
-# ------------------------------------------------------------
-cd /tmp
-wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
-tar xzf eudev-3.2.14.tar.gz
-# 注意：GitHub 下载的源码解压后目录名可能不同，通常是 eudev-3.2.14
-cd eudev-3.2.14
-# 后续的 ./configure 等命令保持不变
-./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared
-make -j$(nproc)
-make install
+name: Build static usbip for arm64 (QEMU + container, compile deps from source)
 
-# ------------------------------------------------------------
-# 2. 编译安装 OpenSSL (如果原有下载地址也失效，可一并替换)
-# ------------------------------------------------------------
-cd /tmp
-# 使用 GitHub 上 OpenSSL 的官方镜像（版本 1.1.1w 是支持的 LTS 版本）
-wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
-tar xzf openssl-1.1.1w.tar.gz
-cd openssl-OpenSSL_1_1_1w
-# 后续的 ./config 命令保持不变
-./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared
-make -j$(nproc)
-make install
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for arm64 emulation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+      - name: Build usbip in arm64 container
+        run: |
+          mkdir -p ${{ github.workspace }}/output
+
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            arm64v8/ubuntu:22.04 \
+            bash -c "
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+
+              # 安装基础编译工具
+              apt update
+              apt install -y \
+                build-essential \
+                autoconf \
+                libtool \
+                pkg-config \
+                wget \
+                xz-utils \
+                flex \
+                bison \
+                libncurses-dev \
+                git \
+                ca-certificates
+
+              # ------------------------------------------------------------
+              # 1. 编译安装 eudev (提供 libudev 静态库)
+              #    使用 GitHub 上的官方发布包
+              # ------------------------------------------------------------
+              cd /tmp
+              wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
+              tar xzf eudev-3.2.14.tar.gz
+              # GitHub 源码解压后目录名通常是 eudev-3.2.14
+              cd eudev-3.2.14
+              # 配置为静态编译并安装到系统目录
+              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared
+              make -j\$(nproc)
+              make install
+
+              # ------------------------------------------------------------
+              # 2. 编译安装 OpenSSL (提供 libssl, libcrypto 静态库)
+              #    使用 GitHub 上的 OpenSSL 官方镜像
+              # ------------------------------------------------------------
+              cd /tmp
+              wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
+              tar xzf openssl-1.1.1w.tar.gz
+              # GitHub 源码解压后目录名是 openssl-OpenSSL_1_1_1w
+              cd openssl-OpenSSL_1_1_1w
+              # 配置为仅生成静态库，安装到系统目录
+              ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared
+              make -j\$(nproc)
+              make install
+
+              # ------------------------------------------------------------
+              # 3. 下载内核源码并编译 usbip
+              # ------------------------------------------------------------
+              cd /workspace
+              wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
+              tar xf linux-4.9.337.tar.xz
+              cd linux-4.9.337/tools/usb/usbip
+
+              # 生成 configure 脚本
+              ./autogen.sh
+
+              # 配置静态编译，并禁用因老代码与新版 GCC 导致的警告错误
+              # 添加 CFLAGS=\"-Wno-error\" 忽略所有警告（也可针对性添加 -Wno-error=stringop-truncation）
+              ./configure \
+                CFLAGS=\"-static -Wno-error\" \
+                LDFLAGS=\"-static\" \
+                --with-tcp-wrappers=no
+
+              # 编译（使用所有核心）
+              make -j\$(nproc)
+
+              # 将生成的二进制复制到输出目录
+              cp src/usbip /workspace/output/
+              cp src/usbipd /workspace/output/
+            "
+
+      - name: Install aarch64 binutils for verification
+        run: sudo apt-get install -y binutils-aarch64-linux-gnu
+
+      - name: Verify binaries are statically linked
+        run: |
+          file output/usbip
+          file output/usbipd
+          echo "=== Dynamic dependencies (should be none) ==="
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo "usbip is statically linked"
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo "usbipd is statically linked"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: usbip-static-arm64
+          path: output/
