@@ -1,4 +1,4 @@
-name: Build static usbip for arm64 (autotools)
+name: Build dynamic usbip for arm64 (QEMU + ARM64 container)
 
 on:
   workflow_dispatch:
@@ -7,57 +7,90 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Install dependencies and cross toolchain
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for arm64 emulation
         run: |
-          sudo dpkg --add-architecture arm64
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential autoconf automake libtool pkg-config \
-            flex bison libncurses-dev \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            libudev-dev:arm64 libssl-dev:arm64
+          sudo apt-get install -y qemu-user-static binfmt-support
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      - name: Download Linux kernel 4.9.337
+      - name: Build usbip in arm64 container (dynamic linking)
         run: |
-          wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
-          tar xf linux-4.9.337.tar.xz
+          mkdir -p ${{ github.workspace }}/output
 
-      - name: Generate configure script
-        working-directory: linux-4.9.337/tools/usb/usbip
-        run: |
-          ./autogen.sh
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            arm64v8/ubuntu:22.04 \
+            bash -c "
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
 
-      - name: Configure for static cross build
-        working-directory: linux-4.9.337/tools/usb/usbip
-        run: |
-          export CC=aarch64-linux-gnu-gcc
-          export AR=aarch64-linux-gnu-ar
-          ./configure \
-            --host=aarch64-linux-gnu \
-            --prefix=/tmp/install \
-            --with-tcp-wrappers=no \
-            CFLAGS="-static -pthread" \
-            LDFLAGS="-static"
+              # 安装编译依赖（仅需动态库开发包）
+              apt update
+              apt install -y \
+                build-essential \
+                autoconf \
+                libtool \
+                pkg-config \
+                libudev-dev \
+                libssl-dev \
+                flex \
+                bison \
+                libncurses-dev \
+                wget \
+                xz-utils
 
-      - name: Build usbip and usbipd
-        working-directory: linux-4.9.337/tools/usb/usbip
-        run: |
-          make V=1 -j$(nproc)
+              # 下载内核源码
+              wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
+              tar -xf linux-4.9.337.tar.xz
 
-      - name: Verify binaries
-        working-directory: linux-4.9.337/tools/usb/usbip
+              # 进入 usbip 源码目录
+              cd linux-4.9.337/tools/usb/usbip
+
+              # 生成 configure 脚本
+              ./autogen.sh
+
+              # 配置（动态编译，不指定 -static）
+              ./configure \
+                --with-tcp-wrappers=no \
+                --host=aarch64-linux-gnu
+
+              # 编译（使用所有 CPU 核心）
+              make -j\$(nproc)
+
+              # 将编译好的二进制复制到输出目录
+              cp src/usbip /workspace/output/
+              cp src/usbipd /workspace/output/
+
+              # 查看动态依赖（调试用）
+              echo '=== Shared library dependencies ==='
+              ldd src/usbip || echo 'ldd not available (cross-compiled?)'
+              # 在容器内可以直接运行 file 和 readelf
+              file src/usbip
+              readelf -d src/usbip | grep NEEDED
+            "
+
+      - name: Install ARM64 binutils for verification (on host)
         run: |
-          file src/usbip src/usbipd
-          aarch64-linux-gnu-readelf -d src/usbip src/usbipd | grep NEEDED || echo "No dynamic dependencies"
-          aarch64-linux-gnu-strip src/usbip src/usbipd
+          sudo apt-get update
+          sudo apt-get install -y binutils-aarch64-linux-gnu
+
+      - name: Verify binaries (on host)
+        run: |
+          file output/usbip
+          file output/usbipd
+          echo "=== Dynamic dependencies (host verification) ==="
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo "No dynamic deps? (unexpected for dynamic build)"
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo "No dynamic deps? (unexpected for dynamic build)"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: usbip-static-arm64
-          path: |
-            linux-4.9.337/tools/usb/usbip/src/usbip
-            linux-4.9.337/tools/usb/usbip/src/usbipd
+          name: usbip-dynamic-arm64
+          path: output/
