@@ -44,7 +44,15 @@ jobs:
                 bison \
                 libncurses-dev \
                 wget \
-                xz-utils
+                xz-utils \
+                libc6-dev
+
+              # 验证 GCC 能否正常编译
+              echo '=== Checking GCC compilation ==='
+              gcc --version
+              echo 'int main() { return 0; }' > test.c
+              gcc -o test test.c
+              ./test && echo '✅ Simple compilation works' || (echo '❌ Simple compilation failed' && exit 1)
 
               # 下载内核源码
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
@@ -70,8 +78,9 @@ jobs:
               export UDEV_CFLAGS=\"\$UDEV_CFLAGS\"
               export UDEV_LIBS=\"\$UDEV_STATIC_LIBS\"
 
-              # 配置（静态编译）
-              ./configure CFLAGS='-static' LDFLAGS='-static' --with-tcp-wrappers=no
+              # 配置（静态编译），如果失败则保存 config.log
+              echo '=== Running configure ==='
+              ./configure CFLAGS='-static' LDFLAGS='-static' --with-tcp-wrappers=no || (cp config.log /workspace/output/ && exit 1)
 
               # 编译（使用所有 CPU 核心）
               make -j\$(nproc)
@@ -82,13 +91,22 @@ jobs:
             "
 
       - name: Verify binaries
+        if: success()
         run: |
           file output/usbip
           file output/usbipd
           # 期望输出：ELF 64-bit LSB executable, ARM aarch64, statically linked
 
       - name: Upload artifacts
+        if: always()   # 即使构建失败也上传 config.log 等
         uses: actions/upload-artifact@v4
         with:
           name: usbip-static-arm64
           path: output/
+
+      - name: Upload config.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: config-log
+          path: output/config.log
