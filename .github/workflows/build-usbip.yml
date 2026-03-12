@@ -1,4 +1,4 @@
-name: Build static usbip & usbipd (kbuild with verification)
+name: Build static usbip for arm64 (autotools)
 
 on:
   workflow_dispatch:
@@ -10,67 +10,54 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      # 1. 安装依赖
-      - name: Install dependencies
+      - name: Install dependencies and cross toolchain
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            crossbuild-essential-arm64 \
-            flex bison \
-            libssl-dev \
-            bc \
-            wget \
-            xz-utils \
-            file
+            build-essential autoconf automake libtool pkg-config \
+            flex bison libncurses-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libudev-dev:arm64 libssl-dev:arm64
 
-      # 2. 下载内核源码（带重试和校验）
-      - name: Download and verify Linux kernel 4.9.337
+      - name: Download Linux kernel 4.9.337
         run: |
-          wget -nv -O linux-4.9.337.tar.xz https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
-          # 可选：校验 sha256（可从 kernel.org 获取，这里仅作示例，实际应使用固定值）
-          # echo "expected_sha256  linux-4.9.337.tar.xz" | sha256sum --check || exit 1
-          tar -xvf linux-4.9.337.tar.xz
+          wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
+          tar xf linux-4.9.337.tar.xz
 
-      # 3. 检查 usbip 源码目录内容（调试用）
-      - name: Inspect usbip source directory
+      - name: Generate configure script
+        working-directory: linux-4.9.337/tools/usb/usbip
         run: |
-          echo "=== Contents of tools/usb/usbip ==="
-          ls -la linux-4.9.337/tools/usb/usbip/
-          echo "=== Check for Makefile ==="
-          if [ ! -f linux-4.9.337/tools/usb/usbip/Makefile ]; then
-            echo "ERROR: Makefile not found! Download or extraction may have failed."
-            exit 1
-          fi
+          ./autogen.sh
 
-      # 4. 生成内核配置（供 usbip 使用）
-      - name: Generate kernel config
-        working-directory: linux-4.9.337
-        run: make ARCH=arm64 defconfig
+      - name: Configure for static cross build
+        working-directory: linux-4.9.337/tools/usb/usbip
+        run: |
+          export CC=aarch64-linux-gnu-gcc
+          export AR=aarch64-linux-gnu-ar
+          ./configure \
+            --host=aarch64-linux-gnu \
+            --prefix=/tmp/install \
+            --with-tcp-wrappers=no \
+            CFLAGS="-static -pthread" \
+            LDFLAGS="-static"
 
-      # 5. 静态编译 usbip 和 usbipd
       - name: Build usbip and usbipd
-        working-directory: linux-4.9.337
+        working-directory: linux-4.9.337/tools/usb/usbip
         run: |
-          make CROSS_COMPILE=aarch64-linux-gnu- \
-               ARCH=arm64 \
-               LDFLAGS="-static" \
-               -C tools/usb/usbip \
-               -j$(nproc)
+          make V=1 -j$(nproc)
 
-      # 6. 验证
       - name: Verify binaries
+        working-directory: linux-4.9.337/tools/usb/usbip
         run: |
-          file linux-4.9.337/tools/usb/usbip/usbip
-          file linux-4.9.337/tools/usb/usbip/usbipd
-          aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbip | grep NEEDED || echo "usbip is statically linked"
-          aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbipd | grep NEEDED || echo "usbipd is statically linked"
+          file src/usbip src/usbipd
+          aarch64-linux-gnu-readelf -d src/usbip src/usbipd | grep NEEDED || echo "No dynamic dependencies"
+          aarch64-linux-gnu-strip src/usbip src/usbipd
 
-      # 7. 上传构建产物
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: usbip-static-arm64
           path: |
-            linux-4.9.337/tools/usb/usbip/usbip
-            linux-4.9.337/tools/usb/usbip/usbipd
+            linux-4.9.337/tools/usb/usbip/src/usbip
+            linux-4.9.337/tools/usb/usbip/src/usbipd
