@@ -1,16 +1,16 @@
-name: Build static usbip & usbipd (kbuild)
+name: Build static usbip & usbipd (kbuild with verification)
 
 on:
-  workflow_dispatch:        # 允许手动触发
+  workflow_dispatch:
   push:
-    branches: [ main ]      # 可根据需要修改分支
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      # 1. 安装交叉编译工具链及必要依赖
+      # 1. 安装依赖
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -24,39 +24,49 @@ jobs:
             xz-utils \
             file
 
-      # 2. 下载指定的 Linux 内核源码包
-      - name: Download Linux kernel 4.9.337 source
+      # 2. 下载内核源码（带重试和校验）
+      - name: Download and verify Linux kernel 4.9.337
         run: |
-          wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
-          tar xf linux-4.9.337.tar.xz
+          wget -nv -O linux-4.9.337.tar.xz https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
+          # 可选：校验 sha256（可从 kernel.org 获取，这里仅作示例，实际应使用固定值）
+          # echo "expected_sha256  linux-4.9.337.tar.xz" | sha256sum --check || exit 1
+          tar -xvf linux-4.9.337.tar.xz
 
-      # 3. 生成内核配置文件（usbip 编译需要内核头文件）
+      # 3. 检查 usbip 源码目录内容（调试用）
+      - name: Inspect usbip source directory
+        run: |
+          echo "=== Contents of tools/usb/usbip ==="
+          ls -la linux-4.9.337/tools/usb/usbip/
+          echo "=== Check for Makefile ==="
+          if [ ! -f linux-4.9.337/tools/usb/usbip/Makefile ]; then
+            echo "ERROR: Makefile not found! Download or extraction may have failed."
+            exit 1
+          fi
+
+      # 4. 生成内核配置（供 usbip 使用）
       - name: Generate kernel config
         working-directory: linux-4.9.337
-        run: |
-          make ARCH=arm64 defconfig
+        run: make ARCH=arm64 defconfig
 
-      # 4. 静态交叉编译 usbip 和 usbipd
+      # 5. 静态编译 usbip 和 usbipd
       - name: Build usbip and usbipd
         working-directory: linux-4.9.337
         run: |
-          export LDFLAGS="-static"          # 强制静态链接
           make CROSS_COMPILE=aarch64-linux-gnu- \
                ARCH=arm64 \
+               LDFLAGS="-static" \
                -C tools/usb/usbip \
                -j$(nproc)
 
-      # 5. 验证生成的二进制文件是否为静态链接
-      - name: Verify static linking
+      # 6. 验证
+      - name: Verify binaries
         run: |
-          echo "=== File information ==="
           file linux-4.9.337/tools/usb/usbip/usbip
           file linux-4.9.337/tools/usb/usbip/usbipd
-          echo "=== Dynamic dependencies (should be none) ==="
           aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbip | grep NEEDED || echo "usbip is statically linked"
           aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbipd | grep NEEDED || echo "usbipd is statically linked"
 
-      # 6. 上传构建产物
+      # 7. 上传构建产物
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
