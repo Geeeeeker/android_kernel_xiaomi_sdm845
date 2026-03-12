@@ -1,4 +1,4 @@
-name: Build static usbip for arm64 (QEMU + container, compile deps from source)
+name: Build static usbip for arm64 (with ZIP packaging)
 
 on:
   workflow_dispatch:
@@ -31,7 +31,7 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装所有必要的编译工具和依赖（包含 xsltproc 以支持 autogen.sh）
+              # 安装编译工具和依赖包
               apt update
               apt install -y \
                 build-essential \
@@ -47,43 +47,31 @@ jobs:
                 git \
                 ca-certificates \
                 gperf \
-                libblkid-dev \
-                libselinux-dev \
-                libglib2.0-dev \
-                libgirepository1.0-dev \
-                util-linux \
-                xsltproc \
-                docbook-xsl
+                libudev-dev \
+                libssl-dev
 
               # ------------------------------------------------------------
-              # 1. 编译安装 eudev (提供 libudev 静态库)
+              # 检查系统是否已提供静态库
               # ------------------------------------------------------------
-              cd /tmp
-              wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
-              tar xzf eudev-3.2.14.tar.gz
-              cd eudev-3.2.14
+              echo '=== Checking for static libraries ==='
+              ls -la /usr/lib/aarch64-linux-gnu/libudev.a || echo 'libudev.a not found, will compile eudev'
+              ls -la /usr/lib/aarch64-linux-gnu/libssl.a || echo 'libssl.a should be provided by libssl-dev'
 
-              # 生成 configure 脚本
-              ./autogen.sh
-
-              # 配置静态编译，并跳过 manpages 生成
-              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared --disable-manpages
-              make -j\$(nproc)
-              make install
-
-              # ------------------------------------------------------------
-              # 2. 编译安装 OpenSSL (提供 libssl, libcrypto 静态库)
-              # ------------------------------------------------------------
-              cd /tmp
-              wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
-              tar xzf openssl-1.1.1w.tar.gz
-              cd openssl-OpenSSL_1_1_1w
-              ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared
-              make -j\$(nproc)
-              make install
+              # 如果 libudev.a 不存在，则编译 eudev
+              if [ ! -f /usr/lib/aarch64-linux-gnu/libudev.a ]; then
+                echo '=== Compiling eudev static library ==='
+                cd /tmp
+                wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
+                tar xzf eudev-3.2.14.tar.gz
+                cd eudev-3.2.14
+                ./autogen.sh
+                ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared --disable-manpages
+                make -j\$(nproc)
+                make install
+              fi
 
               # ------------------------------------------------------------
-              # 3. 下载内核源码并编译 usbip
+              # 下载内核源码并编译 usbip
               # ------------------------------------------------------------
               cd /workspace
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
@@ -91,6 +79,7 @@ jobs:
               cd linux-4.9.337/tools/usb/usbip
 
               ./autogen.sh
+              # 配置静态编译，禁用警告转错误
               ./configure \
                 CFLAGS=\"-static -Wno-error\" \
                 LDFLAGS=\"-static\" \
@@ -98,24 +87,14 @@ jobs:
               make -j\$(nproc)
 
               # ------------------------------------------------------------
-              # 4. 在容器内验证编译产物
+              # 验证并复制二进制
               # ------------------------------------------------------------
               echo '=== Verification inside container ==='
-              if [ ! -f src/usbip ] || [ ! -f src/usbipd ]; then
-                echo 'ERROR: Binary files not found!'
-                exit 1
-              fi
-
               file src/usbip
               file src/usbipd
-              hexdump -C src/usbip | head -n 2 || true
-              hexdump -C src/usbipd | head -n 2 || true
-              readelf -d src/usbip 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
-              readelf -d src/usbipd 2>&1 | grep NEEDED || echo 'No NEEDED entries (statically linked)'
+              readelf -d src/usbip 2>&1 | grep NEEDED || echo 'usbip is statically linked'
+              readelf -d src/usbipd 2>&1 | grep NEEDED || echo 'usbipd is statically linked'
 
-              # ------------------------------------------------------------
-              # 5. 复制到输出目录
-              # ------------------------------------------------------------
               cp src/usbip /workspace/output/
               cp src/usbipd /workspace/output/
               echo 'Binaries copied to /workspace/output/'
@@ -132,8 +111,19 @@ jobs:
           aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo 'usbip: statically linked'
           aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo 'usbipd: statically linked'
 
-      - name: Upload artifacts
+      - name: Create ZIP archive with all files
+        run: |
+          # 根据您的需求，将所有生成的文件（包括可能的其他依赖）打包
+          # 当前只有 usbip 和 usbipd，如有其他文件（如 vhci-core、vhci-hc）可添加
+          mkdir -p release
+          cp output/* release/
+          # 如果存在其他文件，请在此处添加复制命令，例如：
+          # cp /path/to/vhci-core release/
+          # cp /path/to/vhci-hc release/
+          zip -j usbip-static-arm64.zip release/*
+
+      - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
           name: usbip-static-arm64
-          path: output/
+          path: usbip-static-arm64.zip
