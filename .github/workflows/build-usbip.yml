@@ -1,4 +1,4 @@
-name: Build dynamic usbip for arm64 (QEMU + ARM64 container)
+name: Build static usbip for arm64 (QEMU + container, with gcc-10 and low parallelism)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      - name: Build usbip in arm64 container (dynamic linking)
+      - name: Build usbip in arm64 container
         run: |
           mkdir -p ${{ github.workspace }}/output
 
@@ -31,74 +31,95 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
-              # 安装编译依赖
+              # 安装基础编译工具和多版本 GCC
               apt update
               apt install -y \
                 build-essential \
                 autoconf \
                 libtool \
                 pkg-config \
-                libudev-dev \
-                libssl-dev \
+                wget \
+                xz-utils \
                 flex \
                 bison \
                 libncurses-dev \
-                wget \
-                xz-utils \
-                file
+                git \
+                ca-certificates \
+                gcc-10 g++-10 \
+                gcc-11 g++-11 \
+                gcc-12 g++-12
 
-              # 下载内核源码
+              # 设置使用 gcc-10（更稳定，避免 ICE）
+              update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
+              update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 100
+              update-alternatives --set gcc /usr/bin/gcc-10
+              update-alternatives --set g++ /usr/bin/g++-10
+              gcc --version
+
+              # ------------------------------------------------------------
+              # 1. 编译安装 eudev (提供 libudev 静态库)
+              # ------------------------------------------------------------
+              cd /tmp
+              wget https://github.com/eudev-project/eudev/archive/refs/tags/v3.2.14.tar.gz -O eudev-3.2.14.tar.gz
+              tar xzf eudev-3.2.14.tar.gz
+              cd eudev-3.2.14
+              # 使用稳定的编译选项
+              ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu --enable-static --disable-shared \
+                CFLAGS=\"-O1 -w\"   # -O1 避免过度优化，-w 禁用所有警告（可选）
+              make -j2   # 降低并行度
+              make install
+
+              # ------------------------------------------------------------
+              # 2. 编译安装 OpenSSL (提供 libssl, libcrypto 静态库)
+              # ------------------------------------------------------------
+              cd /tmp
+              wget https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1w.tar.gz -O openssl-1.1.1w.tar.gz
+              tar xzf openssl-1.1.1w.tar.gz
+              cd openssl-OpenSSL_1_1_1w
+              ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib/aarch64-linux-gnu no-shared \
+                CFLAGS=\"-O1 -w\"
+              make -j2
+              make install
+
+              # ------------------------------------------------------------
+              # 3. 下载内核源码并编译 usbip
+              # ------------------------------------------------------------
+              cd /workspace
               wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
-              tar -xf linux-4.9.337.tar.xz
-
-              # 进入 usbip 源码目录
+              tar xf linux-4.9.337.tar.xz
               cd linux-4.9.337/tools/usb/usbip
 
               # 生成 configure 脚本
               ./autogen.sh
 
-              # 配置（动态编译，禁用 -Werror）
+              # 配置静态编译，并添加 -Wno-error 避免旧代码的警告被当作错误
+              # 同时使用 -O1 和 -j2 降低内存压力
               ./configure \
-                CFLAGS='-Wno-error' \
-                --with-tcp-wrappers=no \
-                --host=aarch64-linux-gnu
+                CFLAGS=\"-static -O1 -Wno-error\" \
+                LDFLAGS=\"-static\" \
+                --with-tcp-wrappers=no
 
-              # 编译
-              make -j\$(nproc)
+              # 编译（使用 2 个核心，避免内存耗尽）
+              make -j2
 
-              # 检查生成的二进制文件（在容器内）
-              echo '=== Build output files ==='
-              ls -la src/
-              echo '=== File type ==='
-              file src/usbip
-              file src/usbipd
-              echo '=== ELF header (readelf -h) ==='
-              readelf -h src/usbip || echo 'readelf failed'
-              echo '=== Dynamic dependencies (readelf -d) ==='
-              readelf -d src/usbip | grep NEEDED || echo 'No NEEDED section (possibly statically linked?)'
-
-              # 复制到输出目录
+              # 将生成的二进制复制到输出目录
               cp src/usbip /workspace/output/
               cp src/usbipd /workspace/output/
             "
 
-      - name: Install ARM64 binutils for verification (on host)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y binutils-aarch64-linux-gnu file
+      - name: Install aarch64 binutils for verification
+        run: sudo apt-get install -y binutils-aarch64-linux-gnu
 
-      - name: Verify binaries (on host)
+      - name: Verify binaries are statically linked
         run: |
-          echo '=== Host verification ==='
-          ls -l output/
           file output/usbip
           file output/usbipd
-          echo '=== Dynamic dependencies ==='
-          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo 'No NEEDED (static?)'
-          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo 'No NEEDED (static?)'
+          echo "=== Dynamic dependencies (should be none) ==="
+          aarch64-linux-gnu-readelf -d output/usbip | grep NEEDED || echo "usbip is statically linked"
+          aarch64-linux-gnu-readelf -d output/usbipd | grep NEEDED || echo "usbipd is statically linked"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: usbip-dynamic-arm64
+          name: usbip-static-arm64
           path: output/
