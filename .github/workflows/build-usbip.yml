@@ -1,82 +1,66 @@
-name: Build static usbip for arm64
+name: Build static usbip & usbipd (kbuild)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:        # 允许手动触发
   push:
-    branches: [ main ]
+    branches: [ main ]      # 可根据需要修改分支
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # 固定版本，避免意外
+    runs-on: ubuntu-22.04
+
     steps:
-      - name: Install dependencies and cross toolchain
+      # 1. 安装交叉编译工具链及必要依赖
+      - name: Install dependencies
         run: |
-          sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential autoconf automake libtool pkg-config \
-            flex bison libncurses-dev \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            libudev-dev:arm64 libssl-dev:arm64 \
-            libudev-static:arm64 libssl-static:arm64 || true   # 尝试安装静态库（可能不存在）
+            build-essential \
+            crossbuild-essential-arm64 \
+            flex bison \
+            libssl-dev \
+            bc \
+            wget \
+            xz-utils \
+            file
 
-      - name: Download Linux kernel 4.9.337
+      # 2. 下载指定的 Linux 内核源码包
+      - name: Download Linux kernel 4.9.337 source
         run: |
           wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
-          tar -xf linux-4.9.337.tar.xz
+          tar xf linux-4.9.337.tar.xz
 
-      - name: Verify usbip source directory
+      # 3. 生成内核配置文件（usbip 编译需要内核头文件）
+      - name: Generate kernel config
+        working-directory: linux-4.9.337
         run: |
-          ls -la linux-4.9.337/tools/usb/usbip
-          test -f linux-4.9.337/tools/usb/usbip/autogen.sh || { echo "autogen.sh missing"; exit 1; }
+          make ARCH=arm64 defconfig
 
-      - name: Run autogen.sh
-        working-directory: linux-4.9.337/tools/usb/usbip
-        run: |
-          ./autogen.sh
-          # 检查是否生成了 configure 脚本
-          ls -la configure
-
-      - name: Configure for static cross build
-        working-directory: linux-4.9.337/tools/usb/usbip
-        run: |
-          export CC=aarch64-linux-gnu-gcc
-          export AR=aarch64-linux-gnu-ar
-          # 将静态标志传递给 LDFLAGS，并添加 pthread
-          ./configure \
-            --host=aarch64-linux-gnu \
-            --prefix=/tmp/install \
-            --with-tcp-wrappers=no \
-            CFLAGS="-static" \
-            LDFLAGS="-static -pthread" \
-            LIBS="-ludev -lssl -lcrypto"   # 显式指定需要链接的库（如果有）
-          # 保存 config.log 供后续调试
-          cp config.log $HOME/config.log
-
+      # 4. 静态交叉编译 usbip 和 usbipd
       - name: Build usbip and usbipd
-        working-directory: linux-4.9.337/tools/usb/usbip
+        working-directory: linux-4.9.337
         run: |
-          make V=1 -j$(nproc)   # V=1 输出详细编译信息
+          export LDFLAGS="-static"          # 强制静态链接
+          make CROSS_COMPILE=aarch64-linux-gnu- \
+               ARCH=arm64 \
+               -C tools/usb/usbip \
+               -j$(nproc)
 
-      - name: Verify binaries
-        working-directory: linux-4.9.337/tools/usb/usbip
+      # 5. 验证生成的二进制文件是否为静态链接
+      - name: Verify static linking
         run: |
-          file src/usbip src/usbipd
-          aarch64-linux-gnu-readelf -d src/usbip src/usbipd | grep NEEDED || echo "No dynamic deps"
-          aarch64-linux-gnu-strip src/usbip src/usbipd
+          echo "=== File information ==="
+          file linux-4.9.337/tools/usb/usbip/usbip
+          file linux-4.9.337/tools/usb/usbip/usbipd
+          echo "=== Dynamic dependencies (should be none) ==="
+          aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbip | grep NEEDED || echo "usbip is statically linked"
+          aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbipd | grep NEEDED || echo "usbipd is statically linked"
 
-      - name: Upload config.log if failed
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: config-log
-          path: ${{ github.workspace }}/config.log
-
+      # 6. 上传构建产物
       - name: Upload artifacts
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: usbip-static-arm64
           path: |
-            linux-4.9.337/tools/usb/usbip/src/usbip
-            linux-4.9.337/tools/usb/usbip/src/usbipd
+            linux-4.9.337/tools/usb/usbip/usbip
+            linux-4.9.337/tools/usb/usbip/usbipd
