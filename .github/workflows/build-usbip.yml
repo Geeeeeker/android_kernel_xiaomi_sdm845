@@ -1,16 +1,15 @@
 name: Build static usbip & usbipd for ARM64
 
 on:
-  workflow_dispatch:        # 支持手动触发
+  workflow_dispatch:
   push:
-    branches: [ main ]      # 也可按需修改触发分支
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      # 1. 安装必要的编译工具和依赖
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -26,39 +25,37 @@ jobs:
             xz-utils \
             file
 
-      # 2. 下载指定的内核源码包
       - name: Download Linux kernel source
         run: |
           wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
           tar -xf linux-4.9.337.tar.xz
 
-      # 3. 生成基础内核配置（用于产生必要的头文件）
-      - name: Prepare kernel config
+      - name: Verify usbip source directory
+        run: |
+          ls -la linux-4.9.337/tools/usb/usbip
+          # 如果该步骤失败，说明源码结构异常，请检查下载和解压
+
+      - name: Generate kernel config (for headers)
         working-directory: linux-4.9.337
         run: |
           make ARCH=arm64 defconfig
 
-      # 4. 静态交叉编译 usbip 和 usbipd
       - name: Build usbip and usbipd statically for arm64
-        working-directory: linux-4.9.337/tools/usb/usbip
+        working-directory: linux-4.9.337
         run: |
           make CROSS_COMPILE=aarch64-linux-gnu- \
                ARCH=arm64 \
-               CFLAGS="-pthread" \
-               LDFLAGS="-static" \
+               EXTRA_CFLAGS="-static -pthread" \
+               -C tools/usb/usbip \
                -j$(nproc)
 
-      # 5. 验证生成的二进制文件
       - name: Check binaries
         run: |
-          echo "=== File info ==="
           file linux-4.9.337/tools/usb/usbip/usbip
           file linux-4.9.337/tools/usb/usbip/usbipd
-          echo "=== Dynamic dependencies (should be none for static) ==="
           aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbip | grep NEEDED || echo "usbip: no dynamic deps"
           aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbipd | grep NEEDED || echo "usbipd: no dynamic deps"
 
-      # 6. 上传构建产物
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
