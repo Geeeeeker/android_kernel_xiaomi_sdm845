@@ -1,4 +1,4 @@
-name: Build static usbip & usbipd for ARM64
+name: Build static usbip for arm64
 
 on:
   workflow_dispatch:
@@ -7,25 +7,20 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-22.04   # 固定版本，避免意外
     steps:
-      - name: Install dependencies
+      - name: Install dependencies and cross toolchain
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            crossbuild-essential-arm64 \
-            flex bison \
-            libssl-dev \
-            bc \
-            kmod \
-            cpio \
-            wget \
-            xz-utils \
-            file
+            build-essential autoconf automake libtool pkg-config \
+            flex bison libncurses-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libudev-dev:arm64 libssl-dev:arm64 \
+            libudev-static:arm64 libssl-static:arm64 || true   # 尝试安装静态库（可能不存在）
 
-      - name: Download Linux kernel source
+      - name: Download Linux kernel 4.9.337
         run: |
           wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
           tar -xf linux-4.9.337.tar.xz
@@ -33,33 +28,55 @@ jobs:
       - name: Verify usbip source directory
         run: |
           ls -la linux-4.9.337/tools/usb/usbip
-          # 如果该步骤失败，说明源码结构异常，请检查下载和解压
+          test -f linux-4.9.337/tools/usb/usbip/autogen.sh || { echo "autogen.sh missing"; exit 1; }
 
-      - name: Generate kernel config (for headers)
-        working-directory: linux-4.9.337
+      - name: Run autogen.sh
+        working-directory: linux-4.9.337/tools/usb/usbip
         run: |
-          make ARCH=arm64 defconfig
+          ./autogen.sh
+          # 检查是否生成了 configure 脚本
+          ls -la configure
 
-      - name: Build usbip and usbipd statically for arm64
-        working-directory: linux-4.9.337
+      - name: Configure for static cross build
+        working-directory: linux-4.9.337/tools/usb/usbip
         run: |
-          make CROSS_COMPILE=aarch64-linux-gnu- \
-               ARCH=arm64 \
-               EXTRA_CFLAGS="-static -pthread" \
-               -C tools/usb/usbip \
-               -j$(nproc)
+          export CC=aarch64-linux-gnu-gcc
+          export AR=aarch64-linux-gnu-ar
+          # 将静态标志传递给 LDFLAGS，并添加 pthread
+          ./configure \
+            --host=aarch64-linux-gnu \
+            --prefix=/tmp/install \
+            --with-tcp-wrappers=no \
+            CFLAGS="-static" \
+            LDFLAGS="-static -pthread" \
+            LIBS="-ludev -lssl -lcrypto"   # 显式指定需要链接的库（如果有）
+          # 保存 config.log 供后续调试
+          cp config.log $HOME/config.log
 
-      - name: Check binaries
+      - name: Build usbip and usbipd
+        working-directory: linux-4.9.337/tools/usb/usbip
         run: |
-          file linux-4.9.337/tools/usb/usbip/usbip
-          file linux-4.9.337/tools/usb/usbip/usbipd
-          aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbip | grep NEEDED || echo "usbip: no dynamic deps"
-          aarch64-linux-gnu-readelf -d linux-4.9.337/tools/usb/usbip/usbipd | grep NEEDED || echo "usbipd: no dynamic deps"
+          make V=1 -j$(nproc)   # V=1 输出详细编译信息
+
+      - name: Verify binaries
+        working-directory: linux-4.9.337/tools/usb/usbip
+        run: |
+          file src/usbip src/usbipd
+          aarch64-linux-gnu-readelf -d src/usbip src/usbipd | grep NEEDED || echo "No dynamic deps"
+          aarch64-linux-gnu-strip src/usbip src/usbipd
+
+      - name: Upload config.log if failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: config-log
+          path: ${{ github.workspace }}/config.log
 
       - name: Upload artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: usbip-static-arm64
           path: |
-            linux-4.9.337/tools/usb/usbip/usbip
-            linux-4.9.337/tools/usb/usbip/usbipd
+            linux-4.9.337/tools/usb/usbip/src/usbip
+            linux-4.9.337/tools/usb/usbip/src/usbipd
