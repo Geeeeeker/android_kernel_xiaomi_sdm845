@@ -1,0 +1,71 @@
+name: Build static usbip for arm64
+
+on:
+  workflow_dispatch:        # 允许手动触发
+  push:
+    branches: [ main ]      # 也可根据需要修改触发分支
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (dummy step to create workspace)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies and cross-compilation toolchain
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt update
+          sudo apt install -y \
+            build-essential autoconf libtool pkg-config flex bison libncurses-dev \
+            wget xz-utils \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libudev-dev:arm64 libssl-dev:arm64
+
+      - name: Download Linux kernel 4.9.337 source
+        run: |
+          wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.9.337.tar.xz
+          tar -xf linux-4.9.337.tar.xz
+
+      - name: Configure and build usbip statically
+        working-directory: linux-4.9.337/tools/usb/usbip
+        run: |
+          # 确保 autogen.sh 可执行
+          chmod +x autogen.sh
+          ./autogen.sh
+
+          # 设置交叉编译环境变量
+          export CC=aarch64-linux-gnu-gcc
+          export AR=aarch64-linux-gnu-ar
+          export CFLAGS="-static"
+          export LDFLAGS="-static"
+
+          # 配置：禁用 tcp-wrappers，指定主机类型
+          ./configure \
+            --host=aarch64-linux-gnu \
+            --with-tcp-wrappers=no \
+            --prefix=/tmp/install
+
+          # 编译（使用所有CPU核心）
+          make -j$(nproc)
+
+      - name: Verify and strip binaries
+        working-directory: linux-4.9.337/tools/usb/usbip
+        run: |
+          file src/usbip
+          file src/usbipd
+          aarch64-linux-gnu-strip src/usbip src/usbipd
+          echo "Binary info after strip:"
+          file src/usbip
+          file src/usbipd
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: usbip-static-arm64
+          path: |
+            linux-4.9.337/tools/usb/usbip/src/usbip
+            linux-4.9.337/tools/usb/usbip/src/usbipd
