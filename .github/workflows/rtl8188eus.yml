@@ -1,0 +1,85 @@
+name: Build rtl8188eus for Android 14 (ARM64)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:        # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false       # 一个分支失败不影响另一个
+      matrix:
+        kernel-branch: [android14-5.15, android14-6.1]   # Android 14 的两个 GKI 分支
+
+    steps:
+      - name: Checkout rtl8188eus driver
+        uses: actions/checkout@v4
+        with:
+          repository: aircrack-ng/rtl8188eus
+          path: rtl8188eus
+
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git make gcc-aarch64-linux-gnu \
+            bc flex bison libssl-dev
+
+      - name: Cache kernel source
+        id: cache-kernel
+        uses: actions/cache@v4
+        with:
+          path: kernel
+          key: kernel-${{ matrix.kernel-branch }}-${{ github.run_id }}
+          restore-keys: |
+            kernel-${{ matrix.kernel-branch }}-
+
+      - name: Checkout kernel source (android/common)
+        if: steps.cache-kernel.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: android/kernel_common
+          ref: ${{ matrix.kernel-branch }}
+          path: kernel
+          fetch-depth: 1
+
+      - name: Prepare kernel build environment (GKI defconfig)
+        run: |
+          cd kernel
+          # 使用 GKI 的 arm64 默认配置
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
+          # 生成模块编译所需的头文件和脚本
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+        working-directory: kernel
+
+      - name: Build rtl8188eus kernel module
+        run: |
+          cd rtl8188eus
+          # 利用内核构建系统编译外部模块
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+               -C ../kernel M=$(pwd) modules
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p output
+          # 复制生成的 .ko 文件
+          cp rtl8188eus/8188eu.ko output/
+          # 生成简单的版本说明
+          echo "Built for kernel ${{ matrix.kernel-branch }} (Android 14 GKI)" > output/README.txt
+          echo "Architecture: ARM64" >> output/README.txt
+          echo "Driver source: https://github.com/aircrack-ng/rtl8188eus" >> output/README.txt
+          # 可选：复制驱动自带的 README
+          cp rtl8188eus/README.md output/ 2>/dev/null || true
+          # 打包为 zip
+          cd output
+          zip -r ../rtl8188eus-${{ matrix.kernel-branch }}.zip *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtl8188eus-${{ matrix.kernel-branch }}
+          path: rtl8188eus-${{ matrix.kernel-branch }}.zip
