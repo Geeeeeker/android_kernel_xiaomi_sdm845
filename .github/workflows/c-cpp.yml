@@ -1,0 +1,63 @@
+name: Build rtl8188eus from custom kernel (sdm845)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout custom kernel source (includes rtl8188eus)
+        uses: actions/checkout@v4
+        with:
+          # 这里使用了您提供的仓库，但请确保它能被公开访问
+          repository: Geeeeeker/android_kernel_xiaomi_sdm845
+          ref: master  # <-- 可能需要修改：确认内核源码的默认分支名
+          path: kernel
+
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git make gcc-aarch64-linux-gnu \
+            bc flex bison libssl-dev
+
+      - name: Prepare kernel build configuration
+        run: |
+          cd kernel
+          # <-- 关键：需要找到仓库中正确的 defconfig 文件
+          # 假设配置文件是 arch/arm64/configs/sdm845_defconfig，请根据实际修改
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- sdm845_defconfig
+
+      - name: Prepare kernel module build environment
+        run: |
+          cd kernel
+          # 生成模块编译所需的头文件和脚本
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+
+      - name: Build rtl8188eus kernel module
+        run: |
+          cd kernel
+          # 驱动路径为 drivers/rtl8188eus，请确认该路径存在
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+               M=drivers/rtl8188eus modules
+
+      - name: Collect built module
+        run: |
+          mkdir -p output
+          # 编译成功后，.ko 文件会生成在驱动源码目录下
+          find kernel/drivers/rtl8188eus -name "*.ko" -exec cp {} output/ \;
+          # 生成简单的说明文件
+          echo "rtl8188eus kernel module built from Geeeeeker/android_kernel_xiaomi_sdm845" > output/README.txt
+          echo "Compiled on: $(date)" >> output/README.txt
+          cd output && zip -r ../rtl8188eus-sdm845.zip *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtl8188eus-sdm845-module
+          path: rtl8188eus-sdm845.zip
