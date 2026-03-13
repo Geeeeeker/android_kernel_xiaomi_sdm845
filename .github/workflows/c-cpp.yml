@@ -1,23 +1,26 @@
-name: Build rtl8188eus from custom kernel (sdm845)
+name: Build rtl8188eus for Android 14 (ARM64)
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:
+  workflow_dispatch:        # 允许手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel-branch: [android14-5.15, android14-6.1]   # Android 14 的 GKI 内核分支
+
     steps:
-      - name: Checkout custom kernel source (includes rtl8188eus)
+      - name: Checkout rtl8188eus driver (aircrack-ng source)
         uses: actions/checkout@v4
         with:
-          # 这里使用了您提供的仓库，但请确保它能被公开访问
-          repository: Geeeeeker/android_kernel_xiaomi_sdm845
-          ref: master  # <-- 可能需要修改：确认内核源码的默认分支名
-          path: kernel
+          repository: aircrack-ng/rtl8188eus
+          path: rtl8188eus
 
       - name: Install cross-compilation dependencies
         run: |
@@ -26,38 +29,85 @@ jobs:
             git make gcc-aarch64-linux-gnu \
             bc flex bison libssl-dev
 
-      - name: Prepare kernel build configuration
-        run: |
-          cd kernel
-          # <-- 关键：需要找到仓库中正确的 defconfig 文件
-          # 假设配置文件是 arch/arm64/configs/sdm845_defconfig，请根据实际修改
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- sdm845_defconfig
+      - name: Cache kernel source
+        id: cache-kernel
+        uses: actions/cache@v4
+        with:
+          path: kernel
+          key: kernel-${{ matrix.kernel-branch }}-${{ github.run_id }}
+          restore-keys: |
+            kernel-${{ matrix.kernel-branch }}-
 
-      - name: Prepare kernel module build environment
+      - name: Checkout Android GKI kernel source
+        if: steps.cache-kernel.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: android/kernel_common
+          ref: ${{ matrix.kernel-branch }}
+          path: kernel
+          fetch-depth: 1
+
+      - name: Prepare kernel build environment (GKI defconfig)
         run: |
           cd kernel
+          # 使用 GKI 默认配置（已包含无线子系统支持）
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
           # 生成模块编译所需的头文件和脚本
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
 
       - name: Build rtl8188eus kernel module
         run: |
-          cd kernel
-          # 驱动路径为 drivers/rtl8188eus，请确认该路径存在
+          cd rtl8188eus
+          # 利用内核构建系统编译外部模块
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-               M=drivers/rtl8188eus modules
+               -C ../kernel M=$(pwd) modules
 
-      - name: Collect built module
+      - name: Prepare artifacts with usage instructions
         run: |
           mkdir -p output
-          # 编译成功后，.ko 文件会生成在驱动源码目录下
-          find kernel/drivers/rtl8188eus -name "*.ko" -exec cp {} output/ \;
-          # 生成简单的说明文件
-          echo "rtl8188eus kernel module built from Geeeeeker/android_kernel_xiaomi_sdm845" > output/README.txt
-          echo "Compiled on: $(date)" >> output/README.txt
-          cd output && zip -r ../rtl8188eus-sdm845.zip *
+          # 复制生成的模块
+          cp rtl8188eus/8188eu.ko output/
+          # 生成使用说明（基于您提供的 README）
+          cat > output/README.txt << 'EOF'
+          rtl8188eus kernel module for Android 14 (GKI)
+          =============================================
+          Built for kernel: ${{ matrix.kernel-branch }}
+          Architecture: ARM64
+          Driver source: https://github.com/aircrack-ng/rtl8188eus
+
+          Installation Instructions:
+          1. Push the module to your device:
+             adb push 8188eu.ko /data/local/tmp/
+          2. On the device (root required), load the module:
+             insmod /data/local/tmp/8188eu.ko
+          3. If you encounter conflicts, blacklist other drivers:
+             echo 'blacklist r8188eu' > /vendor/etc/modprobe.d/realtek.conf
+             echo 'blacklist rtl8xxxu' >> /vendor/etc/modprobe.d/realtek.conf
+          4. Verify with:
+             lsmod | grep 8188eu
+
+          Enable Monitor Mode:
+          -------------------
+          # Replace wlan0 with your interface name
+          ip link set wlan0 down
+          iw dev wlan0 set type monitor
+          ip link set wlan0 up
+
+          Frame injection test:
+          aireplay-ng -9 wlan0
+
+          Notes:
+          - This module is compatible with Android 14 GKI kernels (5.15/6.1).
+          - Requires root and disabled SELinux (or permissive mode) for full functionality.
+          - For permanent installation, place the .ko in /vendor/lib/modules/ and update depmod.
+          EOF
+
+          # 打包
+          cd output
+          zip -r ../rtl8188eus-android14-${{ matrix.kernel-branch }}.zip *
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rtl8188eus-sdm845-module
-          path: rtl8188eus-sdm845.zip
+          name: rtl8188eus-android14-${{ matrix.kernel-branch }}
+          path: rtl8188eus-android14-${{ matrix.kernel-branch }}.zip
