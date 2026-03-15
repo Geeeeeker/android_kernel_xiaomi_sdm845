@@ -26,13 +26,13 @@ jobs:
     steps:
       - name: 安装软件包
         env:
-          PACKAGES: |
+          PACKAGES: >-
             ccache
             binutils-aarch64-linux-gnu
             binutils-arm-linux-gnueabi
         run: |
           sudo apt update > /dev/null
-          sudo apt install -y ${{ env.PACKAGES }} > /dev/null
+          sudo apt install -y $PACKAGES > /dev/null
 
       - name: 同步仓库
         uses: actions/checkout@v4
