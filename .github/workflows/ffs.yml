@@ -1,176 +1,442 @@
-name: Build FreeFileSync Multi-Arch
+name: Build FreeFileSync
 
-# 触发条件：推送到 main 分支或手动触发
 on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch: # 允许手动启动
-
-# 并发控制：避免多个运行同时操作同一个发布分支（如果后续有部署步骤）
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Select target platform and architecture'
+        required: true
+        type: choice
+        options:
+          - linux-x86_64
+          - linux-aarch64
+          - macos-x86_64
+          - macos-arm64
+          - windows-x86
+          - windows-x64
+          - windows-arm64
 
 env:
-  # 源码地址
-  SOURCE_URL: https://freefilesync.org/download/FreeFileSync_14.8_Source.zip
-  SOURCE_FILE: FreeFileSync_14.8_Source.zip
+  FFS_VERSION: 14.8
+  RESOURCES_FALLBACK_VERSION: 14.7
 
 jobs:
-  # 单一构建矩阵，涵盖所有平台和架构
-  build:
-    name: ${{ matrix.os }} - ${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      # 禁止快速失败，确保所有组合都能得到反馈
-      fail-fast: false
-      # 定义矩阵
-      matrix:
-        include:
-          # --- Windows 构建 (使用 MSYS2) ---
-          - os: windows-latest
-            arch: x86_64        # AMD64 / Intel 64-bit
-            sys: mingw64
-            pkg_prefix: mingw-w64-x86_64-
-          - os: windows-latest
-            arch: i686          # Intel 32-bit (x86)
-            sys: mingw32
-            pkg_prefix: mingw-w64-i686-
-
-          # --- macOS 构建 (原生或交叉) ---
-          - os: macos-latest
-            arch: x86_64        # Intel Mac
-            target_triple: x86_64-apple-darwin
-          - os: macos-latest
-            arch: arm64         # Apple Silicon (GitHub 原生支持) [citation:7]
-            target_triple: arm64-apple-darwin
-
-          # --- Linux 构建 (使用本地和交叉编译) ---
-          - os: ubuntu-latest
-            arch: x86_64        # AMD64
-            target_triple: x86_64-linux-gnu
-            compiler: gcc
-            # 依赖包: 用于 x86_64 的 wxGTK 开发库
-            deps: libwxgtk3.2-dev
-          - os: ubuntu-latest
-            arch: i386          # Intel 32-bit (x86)
-            target_triple: i686-linux-gnu
-            compiler: gcc
-            # 需要 gcc-multilib 和 32-bit wxGTK 库
-            deps: gcc-multilib g++-multilib libwxgtk3.2-dev:i386
-          - os: ubuntu-latest
-            arch: arm64         # Linux ARM64 (使用交叉编译和 QEMU) [citation:4]
-            target_triple: aarch64-linux-gnu
-            compiler: aarch64-linux-gnu-gcc
-            # 交叉编译工具链和 ARM64 依赖
-            deps: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libwxgtk3.2-dev:arm64
-            # 需要 QEMU 来运行和测试 ARM64 二进制 (如果需要)
-            qemu: true
-          - os: ubuntu-latest
-            arch: armhf         # Linux ARM (32-bit)
-            target_triple: arm-linux-gnueabihf
-            compiler: arm-linux-gnueabihf-gcc
-            deps: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libwxgtk3.2-dev:armhf
-            qemu: true
-
+  ###########################################################################
+  # Linux x86_64
+  ###########################################################################
+  linux-x86_64:
+    if: github.event.inputs.target == 'linux-x86_64'
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout repository (for custom scripts)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---------- 步骤 1: 安装基础依赖 (根据操作系统) ----------
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+      - name: Ensure Resources.zip exists
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            wget unzip make cmake pkg-config \
-            ${{ matrix.deps }}
-          # 如果启用了 QEMU，安装用户态模拟器以便运行交叉编译的程序 [citation:4]
-          if [ "${{ matrix.qemu }}" == "true" ]; then
-            sudo apt-get install -y qemu-user-static
+          if [ ! -f FreeFileSync/Build/Resources.zip ]; then
+            echo "Resources.zip missing, downloading from version $RESOURCES_FALLBACK_VERSION"
+            wget -q -O fallback.zip "https://freefilesync.org/download/FreeFileSync_${RESOURCES_FALLBACK_VERSION}_Source.zip"
+            unzip -q fallback.zip -d fallback
+            cp fallback/FreeFileSync_*/FreeFileSync/Build/Resources.zip FreeFileSync/Build/
           fi
 
-      - name: Install macOS build dependencies
-        if: runner.os == 'macOS'
+      - name: Install dependencies
         run: |
-          # macOS 通常自带命令行工具，但可能需要安装额外的库
-          brew install make cmake wxwidgets
+          sudo apt update
+          sudo apt install -y g++-11 make libboost-all-dev libssl-dev libssh2-1-dev libcurl4-openssl-dev
+          sudo snap install cmake --classic
 
-      - name: Install Windows (MSYS2) dependencies
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+      - name: Cache wxWidgets
+        id: cache-wx
+        uses: actions/cache@v4
         with:
-          msystem: ${{ matrix.sys }}
-          install: >-
-            base-devel
-            git
-            unzip
-            zip
-            ${{ matrix.pkg_prefix }}make
-            ${{ matrix.pkg_prefix }}cmake
-            ${{ matrix.pkg_prefix }}gcc
-            ${{ matrix.pkg_prefix }}wxWidgets
+          path: ~/wx-install
+          key: linux-x86_64-wxWidgets-3.1.5
 
-      # ---------- 步骤 2: 下载并解压 FreeFileSync 源码 ----------
-      - name: Download FreeFileSync Source
+      - name: Build and install wxWidgets (static)
+        if: steps.cache-wx.outputs.cache-hit != 'true'
         run: |
-          wget -O ${{ env.SOURCE_FILE }} ${{ env.SOURCE_URL }}
-          unzip -q ${{ env.SOURCE_FILE }} -d source
+          wget -q https://github.com/wxWidgets/wxWidgets/releases/download/v3.1.5/wxWidgets-3.1.5.tar.bz2
+          tar -xf wxWidgets-3.1.5.tar.bz2
+          cd wxWidgets-3.1.5
+          mkdir gtk-build && cd gtk-build
+          ../configure --disable-shared --enable-unicode --prefix=$HOME/wx-install
+          make -j$(nproc)
+          make install
 
-      # ---------- 步骤 3: 应用补丁 (如果需要) ----------
-      # FreeFileSync 的构建系统可能需要针对特定架构进行调整。
-      # 你可以在这里添加步骤，用预定义的补丁文件修改源码。
-      - name: Apply architecture-specific patches (if any)
+      - name: Configure Makefile
         run: |
-          echo "Placeholder: Apply patches for ${{ matrix.arch }} if needed."
-          # 例如: patch -p1 < patches/freefilesync/${{ matrix.arch }}.patch
+          cd FreeFileSync/Source
+          sed -i 's/^CXX = g++/CXX = g++-11/' Makefile
+          echo "LDFLAGS += -static-libstdc++ -static-libgcc" >> Makefile
 
-      # ---------- 步骤 4: 配置和构建 ----------
-      # 注意: 下面的构建命令是高度推测性的，你需要根据 FreeFileSync 的实际构建系统（可能是 Makefile 或脚本）进行替换。
-      - name: Configure and Build
-        shell: ${{ runner.os == 'Windows' && 'msys2' || 'bash' }} # Windows 使用 MSYS2 shell
-        env:
-          # 为交叉编译环境设置编译器变量
-          CC: ${{ matrix.compiler != 'gcc' && matrix.compiler || '' }}
-          CXX: ${{ matrix.compiler != 'g++' && matrix.compiler | replace('gcc', 'g++') || '' }}
+      - name: Build FreeFileSync
         run: |
-          cd source/FreeFileSync/Source
-          # 这里需要根据实际项目的 Makefile 调整
-          if [ "${{ runner.os }}" == "Linux" ] && [ "${{ matrix.arch }}" != "x86_64" ]; then
-            # 交叉编译示例: 指定目标三元组
-            make clean
-            make CROSS_COMPILE=${{ matrix.target_triple }}- all
-          else
-            # 本地编译
-            make -j$(nproc) || make # 尝试并行，失败则回退
-          fi
+          cd FreeFileSync/Source
+          make -j$(nproc)
 
-      # ---------- 步骤 5: 收集构建产物 ----------
-      - name: Prepare artifacts
-        run: |
-          mkdir -p staging/FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}
-          # 假设构建产物在某个特定位置，需要根据实际情况修改
-          cp -v source/FreeFileSync/Source/Build/Output/* staging/FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}/ 2>/dev/null || true
-          # 也可以复制整个发布文件夹
-          cp -rv source/FreeFileSync/Build staging/FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}/ 2>/dev/null || true
-
-      # ---------- 步骤 6: 上传构建产物 ----------
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}
-          path: staging/FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}/*
-          if-no-files-found: warn
+          name: FreeFileSync-linux-x86_64
+          path: FreeFileSync/Build/Bin/
 
-  # 可选: 创建一个发布任务，汇总所有产物
-  release:
-    name: Create Release Summary
-    needs: [build]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' # 只有手动触发时才创建
+  ###########################################################################
+  # Linux aarch64
+  ###########################################################################
+  linux-aarch64:
+    if: github.event.inputs.target == 'linux-aarch64'
+    runs-on: ubuntu-22.04
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-      - name: List files
-        run: ls -R
-      # 这里可以添加步骤，将所有产物打包成一个大的发布包，或者创建一个 GitHub Release
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure Resources.zip exists
+        run: |
+          if [ ! -f FreeFileSync/Build/Resources.zip ]; then
+            echo "Resources.zip missing, downloading from version $RESOURCES_FALLBACK_VERSION"
+            wget -q -O fallback.zip "https://freefilesync.org/download/FreeFileSync_${RESOURCES_FALLBACK_VERSION}_Source.zip"
+            unzip -q fallback.zip -d fallback
+            cp fallback/FreeFileSync_*/FreeFileSync/Build/Resources.zip FreeFileSync/Build/
+          fi
+
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y g++-11-aarch64-linux-gnu gcc-11-aarch64-linux-gnu make \
+            libboost-all-dev libssl-dev:arm64 libssh2-1-dev:arm64 libcurl4-openssl-dev:arm64
+          sudo dpkg --add-architecture arm64
+          sudo apt update
+          sudo apt install -y libc6-dev:arm64 libstdc++-11-dev:arm64
+
+      - name: Cache wxWidgets (aarch64)
+        id: cache-wx
+        uses: actions/cache@v4
+        with:
+          path: ~/wx-install-aarch64
+          key: linux-aarch64-wxWidgets-3.1.5
+
+      - name: Build and install wxWidgets (aarch64 static)
+        if: steps.cache-wx.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://github.com/wxWidgets/wxWidgets/releases/download/v3.1.5/wxWidgets-3.1.5.tar.bz2
+          tar -xf wxWidgets-3.1.5.tar.bz2
+          cd wxWidgets-3.1.5
+          mkdir gtk-build && cd gtk-build
+          export CC=aarch64-linux-gnu-gcc-11
+          export CXX=aarch64-linux-gnu-g++-11
+          export AR=aarch64-linux-gnu-ar
+          export RANLIB=aarch64-linux-gnu-ranlib
+          ../configure --host=aarch64-linux-gnu --disable-shared --enable-unicode --prefix=$HOME/wx-install-aarch64
+          make -j$(nproc)
+          make install
+
+      - name: Configure Makefile for aarch64
+        run: |
+          cd FreeFileSync/Source
+          sed -i 's/^CXX = g++/CXX = aarch64-linux-gnu-g++-11/' Makefile
+          echo "LDFLAGS += -static-libstdc++ -static-libgcc" >> Makefile
+
+      - name: Build FreeFileSync
+        run: |
+          cd FreeFileSync/Source
+          make -j$(nproc)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeFileSync-linux-aarch64
+          path: FreeFileSync/Build/Bin/
+
+  ###########################################################################
+  # macOS x86_64
+  ###########################################################################
+  macos-x86_64:
+    if: github.event.inputs.target == 'macos-x86_64'
+    runs-on: macos-13
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure Resources.zip exists
+        run: |
+          if [ ! -f FreeFileSync/Build/Resources.zip ]; then
+            echo "Resources.zip missing, downloading from version $RESOURCES_FALLBACK_VERSION"
+            curl -L -o fallback.zip "https://freefilesync.org/download/FreeFileSync_${RESOURCES_FALLBACK_VERSION}_Source.zip"
+            unzip -q fallback.zip -d fallback
+            cp fallback/FreeFileSync_*/FreeFileSync/Build/Resources.zip FreeFileSync/Build/
+          fi
+
+      - name: Install Homebrew dependencies
+        run: |
+          brew update
+          brew install boost wxwidgets libssh2 curl
+
+      - name: Configure Makefile for x86_64
+        run: |
+          cd FreeFileSync/Source
+          sed -i '' 's/^CXX = g++/CXX = clang++ -arch x86_64/' Makefile
+          echo "LDFLAGS += -framework CoreFoundation -framework Security" >> Makefile
+
+      - name: Build FreeFileSync
+        run: |
+          cd FreeFileSync/Source
+          make -j$(sysctl -n hw.ncpu)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeFileSync-macos-x86_64
+          path: FreeFileSync/Build/Bin/
+
+  ###########################################################################
+  # macOS arm64
+  ###########################################################################
+  macos-arm64:
+    if: github.event.inputs.target == 'macos-arm64'
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure Resources.zip exists
+        run: |
+          if [ ! -f FreeFileSync/Build/Resources.zip ]; then
+            echo "Resources.zip missing, downloading from version $RESOURCES_FALLBACK_VERSION"
+            curl -L -o fallback.zip "https://freefilesync.org/download/FreeFileSync_${RESOURCES_FALLBACK_VERSION}_Source.zip"
+            unzip -q fallback.zip -d fallback
+            cp fallback/FreeFileSync_*/FreeFileSync/Build/Resources.zip FreeFileSync/Build/
+          fi
+
+      - name: Install Homebrew dependencies
+        run: |
+          brew update
+          brew install boost wxwidgets libssh2 curl
+
+      - name: Configure Makefile for arm64
+        run: |
+          cd FreeFileSync/Source
+          sed -i '' 's/^CXX = g++/CXX = clang++ -arch arm64/' Makefile
+          echo "LDFLAGS += -framework CoreFoundation -framework Security" >> Makefile
+
+      - name: Build FreeFileSync
+        run: |
+          cd FreeFileSync/Source
+          make -j$(sysctl -n hw.ncpu)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeFileSync-macos-arm64
+          path: FreeFileSync/Build/Bin/
+
+  ###########################################################################
+  # Windows x86
+  ###########################################################################
+  windows-x86:
+    if: github.event.inputs.target == 'windows-x86'
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure Resources.zip exists
+        shell: pwsh
+        run: |
+          $resourcesPath = "FreeFileSync/Build/Resources.zip"
+          if (-not (Test-Path $resourcesPath)) {
+              Write-Host "Resources.zip missing, attempting to download from version $env:RESOURCES_FALLBACK_VERSION"
+              $fallbackUrl = "https://freefilesync.org/download/FreeFileSync_$env:RESOURCES_FALLBACK_VERSION`_Source.zip"
+              $fallbackZip = "fallback.zip"
+              
+              Write-Host "Downloading from $fallbackUrl"
+              curl.exe -L -f -o $fallbackZip $fallbackUrl
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Error "Failed to download fallback source from $fallbackUrl"
+                  exit 1
+              }
+              
+              if ((Get-Item $fallbackZip).Length -lt 1MB) {
+                  Write-Error "Downloaded file is too small, likely invalid"
+                  exit 1
+              }
+              
+              $tempDir = "fallback_temp"
+              Expand-Archive -Path $fallbackZip -DestinationPath $tempDir -Force
+              
+              $foundResource = Get-ChildItem -Path $tempDir -Recurse -Filter "Resources.zip" | Select-Object -First 1
+              if (-not $foundResource) {
+                  Write-Error "Could not find Resources.zip in the extracted files"
+                  exit 1
+              }
+              
+              # 确保目标目录存在
+              New-Item -ItemType Directory -Force -Path (Split-Path $resourcesPath -Parent) | Out-Null
+              Copy-Item -Path $foundResource.FullName -Destination $resourcesPath -Force
+              Write-Host "Resources.zip successfully placed at $resourcesPath"
+              
+              Remove-Item -Path $fallbackZip -Force
+              Remove-Item -Path $tempDir -Recurse -Force
+          }
+
+      - name: Install vcpkg and dependencies (x86)
+        run: |
+          git clone https://github.com/Microsoft/vcpkg.git
+          .\vcpkg\bootstrap-vcpkg.bat
+          .\vcpkg\vcpkg install boost wxwidgets libssh2 curl --triplet x86-windows-static
+
+      - name: Set up Visual Studio environment
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build FreeFileSync (x86)
+        run: |
+          cd FreeFileSync/Source
+          $vcpkgPath = "$pwd\..\..\vcpkg\scripts\buildsystems\vcpkg.cmake"
+          msbuild FreeFileSync.sln /p:Configuration=Release /p:Platform=Win32 `
+            /p:VcpkgTriplet=x86-windows-static /p:VcpkgEnabled=true /p:VcpkgRoot="$pwd\..\..\vcpkg\installed"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeFileSync-windows-x86
+          path: FreeFileSync/Build/Bin/
+
+  ###########################################################################
+  # Windows x64
+  ###########################################################################
+  windows-x64:
+    if: github.event.inputs.target == 'windows-x64'
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure Resources.zip exists
+        shell: pwsh
+        run: |
+          $resourcesPath = "FreeFileSync/Build/Resources.zip"
+          if (-not (Test-Path $resourcesPath)) {
+              Write-Host "Resources.zip missing, attempting to download from version $env:RESOURCES_FALLBACK_VERSION"
+              $fallbackUrl = "https://freefilesync.org/download/FreeFileSync_$env:RESOURCES_FALLBACK_VERSION`_Source.zip"
+              $fallbackZip = "fallback.zip"
+              
+              Write-Host "Downloading from $fallbackUrl"
+              curl.exe -L -f -o $fallbackZip $fallbackUrl
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Error "Failed to download fallback source from $fallbackUrl"
+                  exit 1
+              }
+              
+              if ((Get-Item $fallbackZip).Length -lt 1MB) {
+                  Write-Error "Downloaded file is too small, likely invalid"
+                  exit 1
+              }
+              
+              $tempDir = "fallback_temp"
+              Expand-Archive -Path $fallbackZip -DestinationPath $tempDir -Force
+              
+              $foundResource = Get-ChildItem -Path $tempDir -Recurse -Filter "Resources.zip" | Select-Object -First 1
+              if (-not $foundResource) {
+                  Write-Error "Could not find Resources.zip in the extracted files"
+                  exit 1
+              }
+              
+              New-Item -ItemType Directory -Force -Path (Split-Path $resourcesPath -Parent) | Out-Null
+              Copy-Item -Path $foundResource.FullName -Destination $resourcesPath -Force
+              Write-Host "Resources.zip successfully placed at $resourcesPath"
+              
+              Remove-Item -Path $fallbackZip -Force
+              Remove-Item -Path $tempDir -Recurse -Force
+          }
+
+      - name: Install vcpkg and dependencies (x64)
+        run: |
+          git clone https://github.com/Microsoft/vcpkg.git
+          .\vcpkg\bootstrap-vcpkg.bat
+          .\vcpkg\vcpkg install boost wxwidgets libssh2 curl --triplet x64-windows-static
+
+      - name: Set up Visual Studio environment
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build FreeFileSync (x64)
+        run: |
+          cd FreeFileSync/Source
+          $vcpkgPath = "$pwd\..\..\vcpkg\scripts\buildsystems\vcpkg.cmake"
+          msbuild FreeFileSync.sln /p:Configuration=Release /p:Platform=x64 `
+            /p:VcpkgTriplet=x64-windows-static /p:VcpkgEnabled=true /p:VcpkgRoot="$pwd\..\..\vcpkg\installed"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeFileSync-windows-x64
+          path: FreeFileSync/Build/Bin/
+
+  ###########################################################################
+  # Windows arm64
+  ###########################################################################
+  windows-arm64:
+    if: github.event.inputs.target == 'windows-arm64'
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure Resources.zip exists
+        shell: pwsh
+        run: |
+          $resourcesPath = "FreeFileSync/Build/Resources.zip"
+          if (-not (Test-Path $resourcesPath)) {
+              Write-Host "Resources.zip missing, attempting to download from version $env:RESOURCES_FALLBACK_VERSION"
+              $fallbackUrl = "https://freefilesync.org/download/FreeFileSync_$env:RESOURCES_FALLBACK_VERSION`_Source.zip"
+              $fallbackZip = "fallback.zip"
+              
+              Write-Host "Downloading from $fallbackUrl"
+              curl.exe -L -f -o $fallbackZip $fallbackUrl
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Error "Failed to download fallback source from $fallbackUrl"
+                  exit 1
+              }
+              
+              if ((Get-Item $fallbackZip).Length -lt 1MB) {
+                  Write-Error "Downloaded file is too small, likely invalid"
+                  exit 1
+              }
+              
+              $tempDir = "fallback_temp"
+              Expand-Archive -Path $fallbackZip -DestinationPath $tempDir -Force
+              
+              $foundResource = Get-ChildItem -Path $tempDir -Recurse -Filter "Resources.zip" | Select-Object -First 1
+              if (-not $foundResource) {
+                  Write-Error "Could not find Resources.zip in the extracted files"
+                  exit 1
+              }
+              
+              New-Item -ItemType Directory -Force -Path (Split-Path $resourcesPath -Parent) | Out-Null
+              Copy-Item -Path $foundResource.FullName -Destination $resourcesPath -Force
+              Write-Host "Resources.zip successfully placed at $resourcesPath"
+              
+              Remove-Item -Path $fallbackZip -Force
+              Remove-Item -Path $tempDir -Recurse -Force
+          }
+
+      - name: Install vcpkg and dependencies (arm64)
+        run: |
+          git clone https://github.com/Microsoft/vcpkg.git
+          .\vcpkg\bootstrap-vcpkg.bat
+          .\vcpkg\vcpkg install boost wxwidgets libssh2 curl --triplet arm64-windows-static
+
+      - name: Set up Visual Studio environment
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build FreeFileSync (arm64)
+        run: |
+          cd FreeFileSync/Source
+          $vcpkgPath = "$pwd\..\..\vcpkg\scripts\buildsystems\vcpkg.cmake"
+          msbuild FreeFileSync.sln /p:Configuration=Release /p:Platform=ARM64 `
+            /p:VcpkgTriplet=arm64-windows-static /p:VcpkgEnabled=true /p:VcpkgRoot="$pwd\..\..\vcpkg\installed"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeFileSync-windows-arm64
+          path: FreeFileSync/Build/Bin/
