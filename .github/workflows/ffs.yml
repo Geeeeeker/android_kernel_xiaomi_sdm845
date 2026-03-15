@@ -1,0 +1,176 @@
+name: Build FreeFileSync Multi-Arch
+
+# 触发条件：推送到 main 分支或手动触发
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # 允许手动启动
+
+# 并发控制：避免多个运行同时操作同一个发布分支（如果后续有部署步骤）
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 源码地址
+  SOURCE_URL: https://freefilesync.org/download/FreeFileSync_14.8_Source.zip
+  SOURCE_FILE: FreeFileSync_14.8_Source.zip
+
+jobs:
+  # 单一构建矩阵，涵盖所有平台和架构
+  build:
+    name: ${{ matrix.os }} - ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 禁止快速失败，确保所有组合都能得到反馈
+      fail-fast: false
+      # 定义矩阵
+      matrix:
+        include:
+          # --- Windows 构建 (使用 MSYS2) ---
+          - os: windows-latest
+            arch: x86_64        # AMD64 / Intel 64-bit
+            sys: mingw64
+            pkg_prefix: mingw-w64-x86_64-
+          - os: windows-latest
+            arch: i686          # Intel 32-bit (x86)
+            sys: mingw32
+            pkg_prefix: mingw-w64-i686-
+
+          # --- macOS 构建 (原生或交叉) ---
+          - os: macos-latest
+            arch: x86_64        # Intel Mac
+            target_triple: x86_64-apple-darwin
+          - os: macos-latest
+            arch: arm64         # Apple Silicon (GitHub 原生支持) [citation:7]
+            target_triple: arm64-apple-darwin
+
+          # --- Linux 构建 (使用本地和交叉编译) ---
+          - os: ubuntu-latest
+            arch: x86_64        # AMD64
+            target_triple: x86_64-linux-gnu
+            compiler: gcc
+            # 依赖包: 用于 x86_64 的 wxGTK 开发库
+            deps: libwxgtk3.2-dev
+          - os: ubuntu-latest
+            arch: i386          # Intel 32-bit (x86)
+            target_triple: i686-linux-gnu
+            compiler: gcc
+            # 需要 gcc-multilib 和 32-bit wxGTK 库
+            deps: gcc-multilib g++-multilib libwxgtk3.2-dev:i386
+          - os: ubuntu-latest
+            arch: arm64         # Linux ARM64 (使用交叉编译和 QEMU) [citation:4]
+            target_triple: aarch64-linux-gnu
+            compiler: aarch64-linux-gnu-gcc
+            # 交叉编译工具链和 ARM64 依赖
+            deps: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libwxgtk3.2-dev:arm64
+            # 需要 QEMU 来运行和测试 ARM64 二进制 (如果需要)
+            qemu: true
+          - os: ubuntu-latest
+            arch: armhf         # Linux ARM (32-bit)
+            target_triple: arm-linux-gnueabihf
+            compiler: arm-linux-gnueabihf-gcc
+            deps: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libwxgtk3.2-dev:armhf
+            qemu: true
+
+    steps:
+      - name: Checkout repository (for custom scripts)
+        uses: actions/checkout@v4
+
+      # ---------- 步骤 1: 安装基础依赖 (根据操作系统) ----------
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            wget unzip make cmake pkg-config \
+            ${{ matrix.deps }}
+          # 如果启用了 QEMU，安装用户态模拟器以便运行交叉编译的程序 [citation:4]
+          if [ "${{ matrix.qemu }}" == "true" ]; then
+            sudo apt-get install -y qemu-user-static
+          fi
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          # macOS 通常自带命令行工具，但可能需要安装额外的库
+          brew install make cmake wxwidgets
+
+      - name: Install Windows (MSYS2) dependencies
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.sys }}
+          install: >-
+            base-devel
+            git
+            unzip
+            zip
+            ${{ matrix.pkg_prefix }}make
+            ${{ matrix.pkg_prefix }}cmake
+            ${{ matrix.pkg_prefix }}gcc
+            ${{ matrix.pkg_prefix }}wxWidgets
+
+      # ---------- 步骤 2: 下载并解压 FreeFileSync 源码 ----------
+      - name: Download FreeFileSync Source
+        run: |
+          wget -O ${{ env.SOURCE_FILE }} ${{ env.SOURCE_URL }}
+          unzip -q ${{ env.SOURCE_FILE }} -d source
+
+      # ---------- 步骤 3: 应用补丁 (如果需要) ----------
+      # FreeFileSync 的构建系统可能需要针对特定架构进行调整。
+      # 你可以在这里添加步骤，用预定义的补丁文件修改源码。
+      - name: Apply architecture-specific patches (if any)
+        run: |
+          echo "Placeholder: Apply patches for ${{ matrix.arch }} if needed."
+          # 例如: patch -p1 < patches/freefilesync/${{ matrix.arch }}.patch
+
+      # ---------- 步骤 4: 配置和构建 ----------
+      # 注意: 下面的构建命令是高度推测性的，你需要根据 FreeFileSync 的实际构建系统（可能是 Makefile 或脚本）进行替换。
+      - name: Configure and Build
+        shell: ${{ runner.os == 'Windows' && 'msys2' || 'bash' }} # Windows 使用 MSYS2 shell
+        env:
+          # 为交叉编译环境设置编译器变量
+          CC: ${{ matrix.compiler != 'gcc' && matrix.compiler || '' }}
+          CXX: ${{ matrix.compiler != 'g++' && matrix.compiler | replace('gcc', 'g++') || '' }}
+        run: |
+          cd source/FreeFileSync/Source
+          # 这里需要根据实际项目的 Makefile 调整
+          if [ "${{ runner.os }}" == "Linux" ] && [ "${{ matrix.arch }}" != "x86_64" ]; then
+            # 交叉编译示例: 指定目标三元组
+            make clean
+            make CROSS_COMPILE=${{ matrix.target_triple }}- all
+          else
+            # 本地编译
+            make -j$(nproc) || make # 尝试并行，失败则回退
+          fi
+
+      # ---------- 步骤 5: 收集构建产物 ----------
+      - name: Prepare artifacts
+        run: |
+          mkdir -p staging/FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}
+          # 假设构建产物在某个特定位置，需要根据实际情况修改
+          cp -v source/FreeFileSync/Source/Build/Output/* staging/FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}/ 2>/dev/null || true
+          # 也可以复制整个发布文件夹
+          cp -rv source/FreeFileSync/Build staging/FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}/ 2>/dev/null || true
+
+      # ---------- 步骤 6: 上传构建产物 ----------
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}
+          path: staging/FreeFileSync-${{ matrix.os }}-${{ matrix.arch }}/*
+          if-no-files-found: warn
+
+  # 可选: 创建一个发布任务，汇总所有产物
+  release:
+    name: Create Release Summary
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' # 只有手动触发时才创建
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+      - name: List files
+        run: ls -R
+      # 这里可以添加步骤，将所有产物打包成一个大的发布包，或者创建一个 GitHub Release
