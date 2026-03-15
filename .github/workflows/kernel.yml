@@ -8,11 +8,11 @@ on:
   workflow_dispatch:
 
 env:
+  # 自定义 Clang 源（默认使用 proton-clang-11）
+  CUSTOM_CLANG_SOURCE: "https://github.com/kmou424/proton-clang-11"
+  CUSTOM_CLANG_BRANCH: "20200620"
+  # AOSP 备选源（仅当 CUSTOM_CLANG_SOURCE 为空时使用）
   AOSP_TOOLCHAIN_BRANCH: android14
-  AOSP_CLANG_VERSION: r487747                # 请根据实际 android14 使用的 clang 版本调整
-  # 自定义 Clang 源（若设置则优先使用）
-  CUSTOM_CLANG_SOURCE: ""
-  CUSTOM_CLANG_BRANCH: ""
 
 jobs:
   build:
@@ -47,7 +47,7 @@ jobs:
             SAFE_SOURCE=$(echo "$CUSTOM_CLANG_SOURCE" | sed 's/[^a-zA-Z0-9]/-/g')
             echo "key=clang-custom-${SAFE_SOURCE}-$CUSTOM_CLANG_BRANCH" >> $GITHUB_OUTPUT
           else
-            echo "key=clang-aosp-${{ env.AOSP_TOOLCHAIN_BRANCH }}-${{ env.AOSP_CLANG_VERSION }}" >> $GITHUB_OUTPUT
+            echo "key=clang-aosp-${{ env.AOSP_TOOLCHAIN_BRANCH }}" >> $GITHUB_OUTPUT
           fi
         env:
           CUSTOM_CLANG_SOURCE: ${{ env.CUSTOM_CLANG_SOURCE }}
@@ -67,10 +67,8 @@ jobs:
             echo "使用自定义 Clang 源: ${{ env.CUSTOM_CLANG_SOURCE }} 分支: ${{ env.CUSTOM_CLANG_BRANCH }}"
             git clone --depth 1 -b ${{ env.CUSTOM_CLANG_BRANCH }} ${{ env.CUSTOM_CLANG_SOURCE }} clang
           else
-            echo "使用 AOSP 官方 Clang: ${{ env.AOSP_TOOLCHAIN_BRANCH }}-release clang-${{ env.AOSP_CLANG_VERSION }}"
-            mkdir -p clang &&
-            curl -LSs "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.AOSP_TOOLCHAIN_BRANCH }}-release/clang-${{ env.AOSP_CLANG_VERSION }}.tar.gz" |
-            tar xz -C clang
+            echo "使用 AOSP 官方 Clang 分支: ${{ env.AOSP_TOOLCHAIN_BRANCH }}-release"
+            git clone --depth 1 -b ${{ env.AOSP_TOOLCHAIN_BRANCH }}-release https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang
           fi
 
       - name: 缓存ccache
@@ -84,19 +82,15 @@ jobs:
         working-directory: kernel
         run: |
           DEFCONFIG="arch/arm64/configs/polaris-mi845_defconfig"
-          # 开启 Kprobes
           echo "CONFIG_MODULES=y" >> $DEFCONFIG
           echo "CONFIG_KPROBES=y" >> $DEFCONFIG
           echo "CONFIG_HAVE_KPROBES=y" >> $DEFCONFIG
           echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
-          # 开启 OverlayFS
           echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
-          # 禁用 LTO
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/' $DEFCONFIG
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/' $DEFCONFIG
           sed -i 's/CONFIG_THINLTO=y/CONFIG_THINLTO=n/' $DEFCONFIG
           echo "CONFIG_LTO_NONE=y" >> $DEFCONFIG
-          # 禁用 CC_WERROR
           echo "CONFIG_CC_WERROR=n" >> $DEFCONFIG
 
       - name: 配置 LXC 和 Docker 支持
@@ -105,7 +99,6 @@ jobs:
           DEFCONFIG="arch/arm64/configs/polaris-mi845_defconfig"
           rm -rf utils
           git clone https://github.com/tomxi1997/lxc-docker-support-for-android.git utils
-          # 移除 LXC 补丁中强制选中的越权语句
           sed -i '/select CFS_BANDWIDTH/d' utils/Kconfig
           sed -i '/select DOCKER_STATISTICS/d' utils/Kconfig
           sed -i '/select BLK_DEV_THROTTLING/d' utils/Kconfig
@@ -119,11 +112,9 @@ jobs:
           echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> $DEFCONFIG
           echo "# CONFIG_BLK_DEV_THROTTLING is not set" >> $DEFCONFIG
           echo "# CONFIG_CFQ_GROUP_IOSCHED is not set" >> $DEFCONFIG
-          # 修复内核源码自带的 QVR 设备树语法错误
           sed -i '/sdm845-v2-qvr-evt.dtb/d' arch/arm64/boot/dts/qcom/Makefile
           sed -i '/qvr/d' arch/arm64/boot/dts/qcom/Makefile
           sed -i '/interposer/d' arch/arm64/boot/dts/qcom/Makefile
-          # 应用 runc 补丁和 qtaguid 补丁
           chmod +x utils/runcpatch.sh
           if [ -f kernel/cgroup/cgroup.c ]; then
               sh utils/runcpatch.sh kernel/cgroup/cgroup.c
