@@ -142,6 +142,7 @@ jobs:
           export KBUILD_BUILD_HOST=github-runner
           export KBUILD_BUILD_TIMESTAMP=`date -u -d "@$(git log -1 --format=%at)" +"%a %b %d %H:%M:%S %Z %Y"`
           make -j$(nproc --all) \
+            HOSTLD=ld \
             CC="$CC" \
             ARCH="$ARCH" \
             LLVM="$LLVM" \
