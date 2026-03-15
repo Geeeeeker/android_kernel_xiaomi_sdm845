@@ -10,6 +10,9 @@ on:
 env:
   AOSP_TOOLCHAIN_BRANCH: android14          # 改为 android14
   AOSP_CLANG_VERSION: r487747                # 请根据实际 android14 使用的 clang 版本调整
+  # 自定义 Clang 源（若设置则优先使用）
+  CUSTOM_CLANG_SOURCE: ""
+  CUSTOM_CLANG_BRANCH: ""
 
 jobs:
   build:
@@ -37,19 +40,40 @@ jobs:
           repository: Geeeeeker/android_kernel_xiaomi_sdm845   # 改为您自己的内核仓库
           path: kernel
 
+      # 动态生成 Clang 缓存键
+      - name: 设置Clang缓存键
+        id: clang-key
+        run: |
+          if [ -n "$CUSTOM_CLANG_SOURCE" ]; then
+            # 将源 URL 中的特殊字符替换为短横线，生成安全的缓存键
+            SAFE_SOURCE=$(echo "$CUSTOM_CLANG_SOURCE" | sed 's/[^a-zA-Z0-9]/-/g')
+            echo "key=clang-custom-${SAFE_SOURCE}-$CUSTOM_CLANG_BRANCH" >> $GITHUB_OUTPUT
+          else
+            echo "key=clang-aosp-${{ env.AOSP_TOOLCHAIN_BRANCH }}-${{ env.AOSP_CLANG_VERSION }}" >> $GITHUB_OUTPUT
+          fi
+        env:
+          CUSTOM_CLANG_SOURCE: ${{ env.CUSTOM_CLANG_SOURCE }}
+          CUSTOM_CLANG_BRANCH: ${{ env.CUSTOM_CLANG_BRANCH }}
+
       - name: 缓存Clang
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: clang
-          key: clang-${{ env.AOSP_TOOLCHAIN_BRANCH }}-${{ env.AOSP_CLANG_VERSION }}
+          key: ${{ steps.clang-key.outputs.key }}
 
       - name: 下载Clang
         if: steps.cache-clang.outputs.cache-hit != 'true'
-        run:
-          mkdir -p clang &&
-          curl -LSs "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.AOSP_TOOLCHAIN_BRANCH }}-release/clang-${{ env.AOSP_CLANG_VERSION }}.tar.gz" |
-          tar xz -C clang
+        run: |
+          if [ -n "${{ env.CUSTOM_CLANG_SOURCE }}" ]; then
+            echo "使用自定义 Clang 源: ${{ env.CUSTOM_CLANG_SOURCE }} 分支: ${{ env.CUSTOM_CLANG_BRANCH }}"
+            git clone --depth 1 -b ${{ env.CUSTOM_CLANG_BRANCH }} ${{ env.CUSTOM_CLANG_SOURCE }} clang
+          else
+            echo "使用 AOSP 官方 Clang: ${{ env.AOSP_TOOLCHAIN_BRANCH }}-release clang-${{ env.AOSP_CLANG_VERSION }}"
+            mkdir -p clang &&
+            curl -LSs "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.AOSP_TOOLCHAIN_BRANCH }}-release/clang-${{ env.AOSP_CLANG_VERSION }}.tar.gz" |
+            tar xz -C clang
+          fi
 
       - name: 缓存ccache
         uses: hendrikmuhs/ccache-action@v1.2
