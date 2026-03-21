@@ -16,11 +16,17 @@ jobs:
     name: 编译内核
     permissions: { contents: write }
     runs-on: ubuntu-latest
+    outputs:
+      device: ${{ steps.set-device.outputs.device }}   # 输出设备名供 release 使用
     strategy:
       matrix:
         device:
           - dipper
     steps:
+      - name: 设置设备名输出
+        id: set-device
+        run: echo "device=${{ matrix.device }}" >> $GITHUB_OUTPUT
+
       - name: 安装软件包
         env:
           PACKAGES: ccache binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
@@ -138,6 +144,7 @@ jobs:
             O=out \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
             dipper-mi845_defconfig all
 
       - name: 打包(AnyKernel3)
@@ -172,36 +179,17 @@ jobs:
           mv Image.gz-dtb out/kernel
           eval "./mkbootimg.py $mkbootimg_args -o boot-lineage-${{ matrix.device }}.img"
 
-      - name: 上传文件
+      - name: 上传文件 (AK3)
         uses: actions/upload-artifact@v5
         with:
           name: kernel-${{ matrix.device }}-ak3
           path: ak3/Anykernel3-${{ matrix.device }}.zip
 
-      - name: 上传文件
+      - name: 上传文件 (boot)
         uses: actions/upload-artifact@v5
         with:
           name: kernel-${{ matrix.device }}-boot
           path: mkbootimg/boot-lineage-${{ matrix.device }}.img
-
-  release:
-    name: 发布
-    permissions: { contents: write }
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: 获取构建产物
-        uses: actions/download-artifact@v6
-        with:
-          path: kernel
-          pattern: kernel-*
-          merge-multiple: true
-
-      - name: 获取当前时间
-        id: time
-        run: |
-          echo "time=$(TZ='Asia/Shanghai' date -u +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
-          echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
 
       - name: 下载ci管理器
         continue-on-error: true
@@ -213,12 +201,60 @@ jobs:
           workflow: build-manager.yml
           path: manager
 
+      - name: 上传管理器APK (重命名为规范格式)
+        uses: actions/upload-artifact@v5
+        with:
+          name: kernel-${{ matrix.device }}-manager
+          path: manager/*.apk
+
+  release:
+    name: 发布
+    permissions: { contents: write }
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: 获取构建产物
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+          pattern: kernel-*
+          merge-multiple: true
+
+      - name: 重命名发布资产为规范格式
+        run: |
+          cd artifacts
+          PACKAGE_NAME="kernel"                # 自定义包名
+          DEVICE="${{ needs.build.outputs.device }}"
+          ANDROID_VERSION="11"                 # 安卓版本，可根据实际调整
+          # 重命名 zip 文件
+          for file in *.zip; do
+            if [ -f "$file" ]; then
+              mv "$file" "${PACKAGE_NAME}-${DEVICE}-${ANDROID_VERSION}.zip"
+            fi
+          done
+          # 重命名 img 文件
+          for file in *.img; do
+            if [ -f "$file" ]; then
+              mv "$file" "${PACKAGE_NAME}-${DEVICE}-${ANDROID_VERSION}.img"
+            fi
+          done
+          # 重命名 apk 文件 (manager)
+          for file in *.apk; do
+            if [ -f "$file" ]; then
+              mv "$file" "${PACKAGE_NAME}-${DEVICE}-${ANDROID_VERSION}-manager.apk"
+            fi
+          done
+
+      - name: 获取当前时间
+        id: time
+        run: |
+          echo "time=$(TZ='Asia/Shanghai' date -u +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
           tag_name: rel-${{ steps.time.outputs.timestamp }}
           name: Kernel build ${{ steps.time.outputs.time }}
           prerelease: ${{ startsWith(github.ref_name, 'dev/') }}
-          files: |
-            kernel/*
-            manager/*
+          files: artifacts/*
