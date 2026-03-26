@@ -6,7 +6,7 @@ on:
       - dev/*
       - stable/*
     tags:
-      - 'v*'
+      - 'v*'                     # tag 触发，用于 release
   workflow_dispatch:
 
 env:
@@ -25,7 +25,7 @@ jobs:
     steps:
       - name: 安装软件包
         env:
-          PACKAGES: ccache binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+          PACKAGES: ccache binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi gcc-arm-linux-gnueabi
         run: |
           sudo apt update > /dev/null
           sudo apt install -y ${{ env.PACKAGES }} > /dev/null
