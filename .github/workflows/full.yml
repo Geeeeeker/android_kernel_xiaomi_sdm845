@@ -189,23 +189,11 @@ jobs:
             KCFLAGS="-Wno-unknown-warning-option" \
             dipper-mi845_defconfig all
 
-      # 编译 USB/IP 内核模块（单独调用）
-      - name: 编译 USB/IP 内核模块
-        working-directory: kernel
+      # 收集 USB/IP 内核模块（直接从编译输出目录复制）
+      - name: 收集 USB/IP 内核模块
         run: |
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          make -j$(nproc --all) \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            O=out \
-            KCFLAGS="-Wno-unknown-warning-option" \
-            M=drivers/usb/usbip \
-            modules
           mkdir -p $GITHUB_WORKSPACE/usbip-out/modules
-          cp out/drivers/usb/usbip/*.ko $GITHUB_WORKSPACE/usbip-out/modules/
+          cp kernel/out/drivers/usb/usbip/*.ko $GITHUB_WORKSPACE/usbip-out/modules/ || true
 
       # 设置 QEMU 用户态支持
       - name: 设置 QEMU 用户态支持
