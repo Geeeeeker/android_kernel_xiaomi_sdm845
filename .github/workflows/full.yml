@@ -1,4 +1,4 @@
-name: 编译dipper内核
+name: 编译内核
 
 on:
   push:
@@ -189,6 +189,7 @@ jobs:
               patch -p0 < utils/xt_qtaguid.patch
           fi
 
+      # 编译：添加 KCFLAGS 忽略未知警告选项
       - name: 编译
         working-directory: kernel
         run: |
@@ -196,6 +197,7 @@ jobs:
           export KBUILD_BUILD_USER=${{ github.repository_owner }}
           export KBUILD_BUILD_HOST=github-runner
           export KBUILD_BUILD_TIMESTAMP=$(date -u -d "@$(git log -1 --format=%at)" +"%a %b %d %H:%M:%S %Z %Y")
+          # 添加 KCFLAGS 来抑制未知警告选项错误
           make -j$(nproc --all) \
             CC="ccache clang" \
             ARCH=arm64 \
@@ -204,6 +206,7 @@ jobs:
             O=out \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            KCFLAGS="-Wno-unknown-warning-option" \
             dipper-mi845_defconfig all
 
       # 编译 USB/IP 内核模块（单独调用）
@@ -217,12 +220,13 @@ jobs:
             LLVM_IAS=1 \
             O=out \
             CROSS_COMPILE=aarch64-linux-gnu- \
+            KCFLAGS="-Wno-unknown-warning-option" \
             M=drivers/usb/usbip \
             modules
           mkdir -p $GITHUB_WORKSPACE/usbip-out/modules
           cp out/drivers/usb/usbip/*.ko $GITHUB_WORKSPACE/usbip-out/modules/
 
-      # 新增：收集 rtl8188eus 内核模块
+      # 收集 rtl8188eus 内核模块
       - name: 收集 rtl8188eus 内核模块
         run: |
           mkdir -p $GITHUB_WORKSPACE/rtl8188eus-modules
