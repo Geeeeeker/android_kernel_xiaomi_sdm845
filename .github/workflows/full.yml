@@ -36,7 +36,7 @@ jobs:
         with:
           path: kernel
 
-      # 使用官方 KernelSU 集成脚本（替代 SukiSU 手动集成）
+      # 使用官方 KernelSU 集成脚本
       - name: 集成 KernelSU
         working-directory: kernel
         run: |
@@ -192,7 +192,7 @@ jobs:
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      # 12. 编译 USB/IP 用户态工具（Docker 容器，arm64 环境，先准备内核构建环境）
+      # 编译 USB/IP 用户态工具（修正版：使用 O=out 且适配 arm64 原生环境）
       - name: 编译 USB/IP 用户态工具 (Docker 容器)
         run: |
           mkdir -p usbip-out/{bin,libs}
@@ -221,16 +221,15 @@ jobs:
                 file \
                 patchelf
 
-              # 准备内核构建环境（生成 scripts/mod/modpost 等必要工具及头文件）
-              # 注意：此处使用交叉编译，因为内核本身是 arm64 架构
-              make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+              # 使用已存在的 out 目录准备模块构建环境
+              make ARCH=arm64 O=out modules_prepare
 
               # 进入 usbip 用户态工具目录
               cd tools/usb/usbip
               ./autogen.sh
-              # 使用与独立工作流一致的配置选项
+              # 指定内核头文件路径（从 out 目录）
               ./configure \
-                CFLAGS=\"-Wno-error -Wno-error=stringop-truncation\" \
+                CFLAGS=\"-Wno-error -Wno-error=stringop-truncation -I/workspace/kernel/out/include\" \
                 --with-tcp-wrappers=no
               make -j\$(nproc)
 
@@ -239,14 +238,14 @@ jobs:
               cp src/.libs/usbipd /output/bin/
               cp libsrc/.libs/libusbip.so.0* /output/libs/
 
-              # 自动收集依赖库（与之前相同）
+              # 自动收集依赖库（使用原生 readelf）
               cd /output
               BINARIES=\"bin/usbip bin/usbipd libs/libusbip.so.0*\"
               DEPS=\"\"
               for file in \$BINARIES; do
                 if [ -f \"\$file\" ]; then
                   echo \"Collecting dependencies for \$file...\"
-                  needed=\$(aarch64-linux-gnu-readelf -d \"\$file\" | grep NEEDED | awk '{print \$5}' | tr -d '[]' || true)
+                  needed=\$(readelf -d \"\$file\" | grep NEEDED | awk '{print \$5}' | tr -d '[]' || true)
                   for lib in \$needed; do
                     if [[ \"\$DEPS\" != *\"\$lib\"* ]]; then
                       DEPS=\"\$DEPS \$lib\"
