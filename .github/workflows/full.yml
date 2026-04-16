@@ -192,7 +192,7 @@ jobs:
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      # 编译 USB/IP 用户态工具（修正版：直接使用已存在的 out 目录，无需 modules_prepare）
+      # 编译 USB/IP 用户态工具（修正版：使用主机内核源码树，单线程编译避免段错误）
       - name: 编译 USB/IP 用户态工具 (Docker 容器)
         run: |
           mkdir -p usbip-out/{bin,libs}
@@ -221,22 +221,23 @@ jobs:
                 file \
                 patchelf
 
-              # 设置交叉编译环境变量（仅用于避免 Makefile 警告，实际不进行内核编译）
+              # 设置交叉编译环境变量（避免 Makefile 警告）
               export ARCH=arm64
               export CROSS_COMPILE=aarch64-linux-gnu-
               export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-              # 进入 usbip 用户态工具目录
+              # 直接进入 usbip 用户态工具目录
               cd tools/usb/usbip
               ./autogen.sh
-              # 直接指定内核头文件路径（使用已生成的 out/include 和 out/arch/arm64 下的头文件）
+              # 显式指定内核头文件路径，使用主机已编译的 out 目录
               ./configure \
                 CFLAGS=\"-Wno-error -Wno-error=stringop-truncation \
                          -I/workspace/kernel/out/include \
                          -I/workspace/kernel/out/arch/arm64/include/generated \
                          -I/workspace/kernel/arch/arm64/include\" \
                 --with-tcp-wrappers=no
-              make -j\$(nproc)
+              # 单线程编译防止 QEMU 模拟下 gcc 段错误
+              make -j1
 
               # 复制二进制和库
               cp src/.libs/usbip /output/bin/
