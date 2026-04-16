@@ -192,7 +192,7 @@ jobs:
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      # 编译 USB/IP 用户态工具（Docker 容器）
+      # 12. 编译 USB/IP 用户态工具（Docker 容器，arm64 环境，先准备内核构建环境）
       - name: 编译 USB/IP 用户态工具 (Docker 容器)
         run: |
           mkdir -p usbip-out/{bin,libs}
@@ -212,25 +212,41 @@ jobs:
                 autoconf \
                 libtool \
                 pkg-config \
-                libudev-dev \
-                libssl-dev \
+                libudev-dev:arm64 \
+                libssl-dev:arm64 \
                 flex \
                 bison \
+                bc \
+                libelf-dev \
                 file \
                 patchelf
+
+              # 准备内核构建环境（生成 scripts/mod/modpost 等必要工具及头文件）
+              # 注意：此处使用交叉编译，因为内核本身是 arm64 架构
+              make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+
+              # 进入 usbip 用户态工具目录
               cd tools/usb/usbip
               ./autogen.sh
-              ./configure CFLAGS=\"-O0 -Wno-error\" --prefix=/usr
-              make CFLAGS=\"-O0 -Wno-error\" -j1
+              # 使用与独立工作流一致的配置选项
+              ./configure \
+                CFLAGS=\"-Wno-error -Wno-error=stringop-truncation\" \
+                --with-tcp-wrappers=no
+              make -j\$(nproc)
+
+              # 复制二进制和库
               cp src/.libs/usbip /output/bin/
               cp src/.libs/usbipd /output/bin/
               cp libsrc/.libs/libusbip.so.0* /output/libs/
+
+              # 自动收集依赖库（与之前相同）
               cd /output
               BINARIES=\"bin/usbip bin/usbipd libs/libusbip.so.0*\"
               DEPS=\"\"
               for file in \$BINARIES; do
                 if [ -f \"\$file\" ]; then
-                  needed=\$(readelf -d \"\$file\" | grep NEEDED | awk '{print \$5}' | tr -d '[]' || true)
+                  echo \"Collecting dependencies for \$file...\"
+                  needed=\$(aarch64-linux-gnu-readelf -d \"\$file\" | grep NEEDED | awk '{print \$5}' | tr -d '[]' || true)
                   for lib in \$needed; do
                     if [[ \"\$DEPS\" != *\"\$lib\"* ]]; then
                       DEPS=\"\$DEPS \$lib\"
@@ -239,18 +255,26 @@ jobs:
                 fi
               done
               for lib in \$(echo \$DEPS | tr ' ' '\\n' | sort -u); do
-                libpath=\$(find /lib /usr/lib -name \"\$lib\" -type f 2>/dev/null | head -1 || true)
+                echo \"Searching for library: \$lib\"
+                libpath=\$(ldconfig -p | grep \"\$lib (\" | head -1 | awk '{print \$NF}' || true)
+                if [ -z \"\$libpath\" ]; then
+                  libpath=\$(find /lib /usr/lib -name \"\$lib\" -type f 2>/dev/null | head -1 || true)
+                fi
                 if [ -n \"\$libpath\" ]; then
+                  echo \"Found: \$libpath\"
                   cp -P \"\$libpath\" libs/ 2>/dev/null || cp \"\$libpath\" libs/
                   for reallib in \$(find \"\$(dirname \"\$libpath\")\" -name \"\${lib%.so*}*\" -type f 2>/dev/null); do
                     cp -n \"\$reallib\" libs/ 2>/dev/null || true
                   done
+                else
+                  echo \"Warning: library \$lib not found\"
                 fi
               done
               ld_linux=\"/lib/ld-linux-aarch64.so.1\"
               if [ -f \"\$ld_linux\" ]; then
                 cp -P \"\$ld_linux\" libs/
               fi
+              echo \"USB/IP user-space tools build and library collection complete.\"
             "
 
       - name: 打包 USB/IP 产物
