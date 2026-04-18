@@ -35,8 +35,8 @@ jobs:
         with:
           path: kernel
 
-      # ========== 修改点1：使用 SoDebug/KernelSU 替换官方 KernelSU ==========
-      - name: 集成 KernelSU (SoDebug 版)
+      # 集成 KernelSU (SoDebug 版，手动链接)
+      - name: 集成 KernelSU
         working-directory: kernel
         run: |
           # 克隆 SoDebug/KernelSU 仓库
@@ -56,7 +56,6 @@ jobs:
           # 将 KernelSU 内核源码集成到 drivers/staging/kernelsu
           rm -rf drivers/staging/kernelsu
           mkdir -p drivers/staging/kernelsu
-          # 创建软链接指向 KernelSU_SRC/kernel
           ln -sf ../../../KernelSU_SRC/kernel drivers/staging/kernelsu/KernelSU
           cp KernelSU_SRC/kernel/Makefile drivers/staging/kernelsu/Makefile
           cp KernelSU_SRC/kernel/Kconfig drivers/staging/kernelsu/Kconfig
@@ -66,11 +65,7 @@ jobs:
             echo 'source "drivers/staging/kernelsu/Kconfig"' >> drivers/Kconfig
           fi
 
-          # 可选：复制 setup 分支的 setup.sh 以备不时之需
-          git clone -b setup https://github.com/SoDebug/KernelSU.git KernelSU_setup
-          cp KernelSU_setup/setup.sh ./ 2>/dev/null || true
-          rm -rf KernelSU_setup
-
+          # 可选：克隆 setup 分支获取管理器 APK（后面单独下载官方版，此处不需要）
           echo "KernelSU integration from SoDebug/KernelSU completed (id=$KSU_ID, version=$KSU_VERSION)"
 
       - name: 缓存 Clang
@@ -94,25 +89,34 @@ jobs:
           restore-keys: kernel-${{ matrix.device }}
           max-size: 5G
 
-      # 配置内核基础参数（包含 USB/IP 内建、Binder、USB串口等）
+      # 配置内核基础参数（包含 Kprobes / KernelSU / Binder / USB/IP 内建 / USB串口等）
       - name: 配置内核基础参数
         working-directory: kernel
         run: |
           DEFCONFIG="arch/arm64/configs/dipper-mi845_defconfig"
 
-          # 开启 OverlayFS
+          # ========== KernelSU 相关配置 ==========
+          echo "CONFIG_KPROBES=y" >> $DEFCONFIG
+          echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
+          echo "CONFIG_KSU=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_KPROBE_HOOKS=y" >> $DEFCONFIG
+          echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
+          echo "CONFIG_KALLSYMS_ALL=y" >> $DEFCONFIG
+          # 禁用 MODVERSIONS（KernelSU 要求）
+          sed -i 's/CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' $DEFCONFIG
+          echo "# CONFIG_MODVERSIONS is not set" >> $DEFCONFIG
+
+          # ========== OverlayFS / Docker ==========
           echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
 
-          # 禁用 LTO
+          # ========== 禁用 LTO ==========
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/' $DEFCONFIG
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/' $DEFCONFIG
           sed -i 's/CONFIG_THINLTO=y/CONFIG_THINLTO=n/' $DEFCONFIG
           echo "CONFIG_LTO_NONE=y" >> $DEFCONFIG
 
-          # 禁用 CC_WERROR
+          # ========== 其他 ==========
           echo "CONFIG_CC_WERROR=n" >> $DEFCONFIG
-
-          # 用户要求的配置选项
           echo "CONFIG_ASHMEM=y" >> $DEFCONFIG
           echo "CONFIG_SYSVIPC=y" >> $DEFCONFIG
           echo "CONFIG_SYSVIPC_SYSCTL=y" >> $DEFCONFIG
@@ -126,16 +130,16 @@ jobs:
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> $DEFCONFIG
           echo "CONFIG_TMPFS_XATTR=y" >> $DEFCONFIG
 
-          # ========== USB/IP 改为内建 (y) ==========
+          # ========== USB/IP 内建 ==========
           echo "CONFIG_USBIP_CORE=y" >> $DEFCONFIG
           echo "CONFIG_USBIP_VHCI_HCD=y" >> $DEFCONFIG
           echo "CONFIG_USBIP_HOST=y" >> $DEFCONFIG
 
-          # ========== 增加 Binder 支持 ==========
+          # ========== Binder 支持 ==========
           echo "CONFIG_ANDROID_BINDER_IPC=y" >> $DEFCONFIG
           echo "CONFIG_ANDROID_BINDERFS=y" >> $DEFCONFIG
 
-          # ========== 增加 USB 串口支持 ==========
+          # ========== USB 串口支持 ==========
           echo "CONFIG_USB_SERIAL=y" >> $DEFCONFIG
           echo "CONFIG_USB_SERIAL_CONSOLE=y" >> $DEFCONFIG
           echo "CONFIG_USB_SERIAL_GENERIC=y" >> $DEFCONFIG
@@ -144,18 +148,14 @@ jobs:
           echo "CONFIG_USB_SERIAL_CP210X=y" >> $DEFCONFIG
           echo "CONFIG_USB_SERIAL_PL2303=y" >> $DEFCONFIG
 
-          # Backlight 支持
+          # ========== Backlight ==========
           echo "CONFIG_BACKLIGHT_CLASS_DEVICE=y" >> $DEFCONFIG
           echo "CONFIG_BACKLIGHT_QCOM=y" >> $DEFCONFIG
 
-          # zstd 压缩支持
+          # ========== zram / zstd ==========
           echo "CONFIG_ZRAM=y" >> $DEFCONFIG
           echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> $DEFCONFIG
           echo "CONFIG_CRYPTO_ZSTD=y" >> $DEFCONFIG
-
-          # 替换 MODVERSIONS（KernelSU 需要）
-          sed -i 's/CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' $DEFCONFIG
-          echo "# CONFIG_MODVERSIONS is not set" >> $DEFCONFIG
 
       - name: 配置 LXC 和 Docker 支持
         working-directory: kernel
@@ -216,16 +216,13 @@ jobs:
             KCFLAGS="-Wno-unknown-warning-option" \
             dipper-mi845_defconfig all
 
-      # ========== 删除原本的“收集 USB/IP 内核模块”步骤（因为已内建） ==========
-
-      # 设置 QEMU 用户态支持（用于编译 USB/IP 用户态工具）
+      # ========== 编译 USB/IP 用户态工具（保留） ==========
       - name: 设置 QEMU 用户态支持
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      # 编译 USB/IP 用户态工具（保留，用于生成 usbip/usbipd 二进制及动态库）
       - name: 编译 USB/IP 用户态工具 (Docker 容器)
         run: |
           mkdir -p usbip-out/{bin,libs}
@@ -254,30 +251,24 @@ jobs:
                 file \
                 patchelf
 
-              # 设置交叉编译环境变量（避免 Makefile 警告）
               export ARCH=arm64
               export CROSS_COMPILE=aarch64-linux-gnu-
               export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-              # 直接进入 usbip 用户态工具目录
               cd tools/usb/usbip
               ./autogen.sh
-              # 显式指定内核头文件路径，使用主机已编译的 out 目录
               ./configure \
                 CFLAGS=\"-Wno-error -Wno-error=stringop-truncation \
                          -I/workspace/kernel/out/include \
                          -I/workspace/kernel/out/arch/arm64/include/generated \
                          -I/workspace/kernel/arch/arm64/include\" \
                 --with-tcp-wrappers=no
-              # 单线程编译防止 QEMU 模拟下 gcc 段错误
               make -j1
 
-              # 复制二进制和库
               cp src/.libs/usbip /output/bin/
               cp src/.libs/usbipd /output/bin/
               cp libsrc/.libs/libusbip.so.0* /output/libs/
 
-              # 自动收集依赖库（使用原生 readelf）
               cd /output
               BINARIES=\"bin/usbip bin/usbipd libs/libusbip.so.0*\"
               DEPS=\"\"
@@ -312,7 +303,7 @@ jobs:
               if [ -f \"\$ld_linux\" ]; then
                 cp -P \"\$ld_linux\" libs/
               fi
-              echo \"USB/IP user-space tools build and library collection complete.\"
+              echo \"USB/IP user-space tools build complete.\"
             "
 
       - name: 打包 USB/IP 产物
@@ -327,7 +318,7 @@ jobs:
           name: usbip-arm64-bundle
           path: usbip-arm64-bundle.tar.gz
 
-      # 下载 KernelSU 管理器 APK（沿用官方最新版）
+      # ========== 下载 KernelSU 管理器 APK ==========
       - name: Download KernelSU Manager APK
         run: |
           LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest | grep "browser_download_url.*\.apk" | cut -d '"' -f 4)
@@ -340,6 +331,7 @@ jobs:
           mkdir -p apk-output
           cp KernelSU-Manager.apk apk-output/
 
+      # ========== 打包 AnyKernel3 ==========
       - name: 打包 (AnyKernel3)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 ak3
