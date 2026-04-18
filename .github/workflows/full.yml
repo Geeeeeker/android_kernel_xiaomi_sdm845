@@ -1,4 +1,4 @@
-name: 编译内核
+name: 编译内核(KSU Next + SUSFS)
 
 on:
   push:
@@ -8,6 +8,25 @@ on:
     tags:
       - 'v*'                     # tag 触发，用于 release
   workflow_dispatch:
+    inputs:
+      KSUNEXT_ENABLED:
+        description: "集成 KernelSU Next"
+        required: true
+        type: boolean
+        default: true
+      SUSFS_ENABLED:
+        description: "集成 SUSFS"
+        required: true
+        type: boolean
+        default: true
+      ANDROID_VERSION:
+        description: "内核安卓版本 (用于SUSFS补丁)"
+        required: true
+        default: 'android13'
+      KERNEL_VERSION:
+        description: "内核版本号 (用于SUSFS补丁, 如5.4/5.10/5.15)"
+        required: true
+        default: '5.4'
 
 env:
   AOSP_TOOLCHAIN_BRANCH: android11-release
@@ -30,34 +49,60 @@ jobs:
           sudo apt update > /dev/null
           sudo apt install -y ${{ env.PACKAGES }} > /dev/null
 
-      - name: 同步仓库
+      - name: 同步内核源码
         uses: actions/checkout@v4
         with:
           path: kernel
 
-      # ========== KernelSU 集成（完全参照第二份工作流） ==========
-      - name: 集成 KernelSU (SoDebug 版，手动 hook 模式)
+      # ================== 集成 KernelSU Next ==================
+      - name: 集成 KernelSU Next
+        if: github.event.inputs.KSUNEXT_ENABLED == 'true' || github.event_name != 'workflow_dispatch'
         working-directory: kernel
         run: |
-          # 克隆 SoDebug/KernelSU 到内核源码树内
-          git clone --depth=1 https://github.com/SoDebug/KernelSU.git KernelSU
-          # 复制内核部分到 drivers/kernelsu
-          cp -r KernelSU/kernel drivers/kernelsu
-          # 修改 drivers/Makefile，添加 kernelsu 子目录
-          echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
-          # 修改 drivers/Kconfig，添加 kernelsu 的配置源
-          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          
-          # 记录版本信息（可选，用于后续打包命名）
-          cd KernelSU
-          KSU_ID=$(git show -s --format='%h')
-          GIT_COUNT=$(git rev-list --count HEAD)
-          KSU_VERSION=$((10000 + GIT_COUNT + 200))
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          cd KernelSU-Next
+          KSU_VERSION=$(expr $(git rev-list --count HEAD) "+" 10200)
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+          sed -i "s/DKSU_VERSION=16/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
+
+      # ================== 集成 SUSFS ==================
+      - name: 集成 SUSFS
+        if: github.event.inputs.SUSFS_ENABLED == 'true' || github.event_name != 'workflow_dispatch'
+        working-directory: kernel
+        run: |
+          # 克隆 SUSFS 补丁仓库
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }} ../susfs4ksu
+          git clone https://github.com/TheWildJames/kernel_patches.git ../kernel_patches
+
+          # 复制 SUSFS 补丁到内核源码树
+          cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./KernelSU-Next/
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch ./
+          cp ../susfs4ksu/kernel_patches/fs/* ./fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
+
+          # 应用 KernelSU Next 的 SUSFS 支持补丁
+          cd ./KernelSU-Next
+          patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true
           cd ..
-          echo "KERNELSU_ID=$KSU_ID" >> $GITHUB_ENV
-          echo "KERNELSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
-          
-          echo "KernelSU integrated (manual hook mode)"
+
+          # 应用主 SUSFS 补丁
+          patch -p1 < 50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch || true
+
+          # 附加隐藏/修复补丁
+          cp ../kernel_patches/69_hide_stuff.patch ./
+          patch -p1 -F 3 < 69_hide_stuff.patch || true
+
+          cp ../kernel_patches/apk_sign.c_fix.patch ./
+          patch -p1 -F 3 < apk_sign.c_fix.patch || true
+
+          cp ../kernel_patches/core_hook.c_fix.patch ./
+          patch -p1 --fuzz=3 < core_hook.c_fix.patch || true
+
+          cp ../kernel_patches/selinux.c_fix.patch ./
+          patch -p1 -F 3 < selinux.c_fix.patch || true
+
+          # 提交更改（避免后续 Git 操作警告）
+          git add -A && git commit -a -m "Integrate KernelSU Next & SUSFS" || true
 
       - name: 缓存 Clang
         id: cache-clang
@@ -80,29 +125,21 @@ jobs:
           restore-keys: kernel-${{ matrix.device }}
           max-size: 5G
 
-      # ========== 配置内核基础参数（包括 KSU 手动 hook 和所有其他选项） ==========
-      - name: 配置内核基础参数
+      # 配置内核基础参数（Kprobes 已由 KernelSU Next 脚本自动开启）
+      - name: 配置内核基础参数 (OverlayFS/LTO/基础选项)
         working-directory: kernel
         run: |
           DEFCONFIG="arch/arm64/configs/dipper-mi845_defconfig"
-
-          # ---------- KernelSU 手动 hook 配置 ----------
-          echo "CONFIG_KSU=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_MANUAL_HOOK=y" >> $DEFCONFIG   # 启用非 kprobe 模式
-          echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
-          echo "CONFIG_KALLSYMS_ALL=y" >> $DEFCONFIG
-
-          # ---------- OverlayFS / Docker ----------
+          # 开启 OverlayFS
           echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
-
-          # ---------- 禁用 LTO ----------
+          # 禁用 LTO
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/' $DEFCONFIG
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/' $DEFCONFIG
           sed -i 's/CONFIG_THINLTO=y/CONFIG_THINLTO=n/' $DEFCONFIG
           echo "CONFIG_LTO_NONE=y" >> $DEFCONFIG
-
-          # ---------- 其他核心功能 ----------
+          # 禁用 CC_WERROR
           echo "CONFIG_CC_WERROR=n" >> $DEFCONFIG
+          # 用户要求的配置选项
           echo "CONFIG_ASHMEM=y" >> $DEFCONFIG
           echo "CONFIG_SYSVIPC=y" >> $DEFCONFIG
           echo "CONFIG_SYSVIPC_SYSCTL=y" >> $DEFCONFIG
@@ -115,39 +152,21 @@ jobs:
           echo "CONFIG_TMPFS=y" >> $DEFCONFIG
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> $DEFCONFIG
           echo "CONFIG_TMPFS_XATTR=y" >> $DEFCONFIG
-
-          # ---------- USB/IP 内建 ----------
-          echo "CONFIG_USBIP_CORE=y" >> $DEFCONFIG
-          echo "CONFIG_USBIP_VHCI_HCD=y" >> $DEFCONFIG
-          echo "CONFIG_USBIP_HOST=y" >> $DEFCONFIG
-
-          # ---------- Binder 支持 ----------
-          echo "CONFIG_ANDROID_BINDER_IPC=y" >> $DEFCONFIG
-          echo "CONFIG_ANDROID_BINDERFS=y" >> $DEFCONFIG
-
-          # ---------- USB 串口支持 ----------
-          echo "CONFIG_USB_SERIAL=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_CONSOLE=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_GENERIC=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_CH341=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_FTDI_SIO=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_CP210X=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_PL2303=y" >> $DEFCONFIG
-
-          # ---------- Backlight ----------
+          # USB/IP 配置
+          echo "CONFIG_USBIP_CORE=m" >> $DEFCONFIG
+          echo "CONFIG_USBIP_VHCI_HCD=m" >> $DEFCONFIG
+          echo "CONFIG_USBIP_HOST=m" >> $DEFCONFIG
+          # Backlight 支持
           echo "CONFIG_BACKLIGHT_CLASS_DEVICE=y" >> $DEFCONFIG
           echo "CONFIG_BACKLIGHT_QCOM=y" >> $DEFCONFIG
-
-          # ---------- zram / zstd ----------
+          # zstd 压缩支持
           echo "CONFIG_ZRAM=y" >> $DEFCONFIG
           echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> $DEFCONFIG
           echo "CONFIG_CRYPTO_ZSTD=y" >> $DEFCONFIG
-
-          # ---------- 禁用 MODVERSIONS（KernelSU 建议） ----------
+          # 替换 MODVERSIONS（KernelSU 需要）
           sed -i 's/CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' $DEFCONFIG
           echo "# CONFIG_MODVERSIONS is not set" >> $DEFCONFIG
 
-      # ========== 配置 LXC 和 Docker 支持（保留原有逻辑） ==========
       - name: 配置 LXC 和 Docker 支持
         working-directory: kernel
         run: |
@@ -160,10 +179,8 @@ jobs:
           sed -i '/select BLK_DEV_THROTTLING/d' utils/Kconfig
           sed -i '/select CFQ_GROUP_IOSCHED/d' utils/Kconfig
           sed -i '/select BRIDGE_VLAN_FILTERING/d' utils/Kconfig
-
           echo 'source "utils/Kconfig"' >> "Kconfig"
           echo "CONFIG_DOCKER=y" >> $DEFCONFIG
-
           # 禁用冲突特性
           echo "# CONFIG_CFS_BANDWIDTH is not set" >> $DEFCONFIG
           echo "# CONFIG_DOCKER_STATISTICS is not set" >> $DEFCONFIG
@@ -171,12 +188,10 @@ jobs:
           echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> $DEFCONFIG
           echo "# CONFIG_BLK_DEV_THROTTLING is not set" >> $DEFCONFIG
           echo "# CONFIG_CFQ_GROUP_IOSCHED is not set" >> $DEFCONFIG
-
           # 修复设备树错误
           sed -i '/sdm845-v2-qvr-evt.dtb/d' arch/arm64/boot/dts/qcom/Makefile
           sed -i '/qvr/d' arch/arm64/boot/dts/qcom/Makefile
           sed -i '/interposer/d' arch/arm64/boot/dts/qcom/Makefile
-
           # 应用 runc/qtaguid 补丁
           chmod +x utils/runcpatch.sh
           if [ -f kernel/cgroup/cgroup.c ]; then
@@ -189,33 +204,6 @@ jobs:
               patch -p0 < utils/xt_qtaguid.patch
           fi
 
-      # ========== 为 KernelSU 手动 hook 模式打内核补丁 ==========
-      - name: 为 KernelSU 手动 hook 模式打补丁
-        working-directory: kernel
-        run: |
-          # 在 fs/exec.c 中插入 hook（监控 execve）
-          if grep -q "ksu_handle_execveat" fs/exec.c; then
-            echo "Manual hook already applied to exec.c, skipping."
-          else
-            sed -i '/fd_install(fd, file);/a\
-            \    #ifdef CONFIG_KSU_MANUAL_HOOK\
-            \    extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\
-            \    ksu_handle_execveat(&fd, &filename, &argv, &env, &flags);\
-            \    #endif' fs/exec.c
-          fi
-
-          # 在 fs/open.c 中插入 hook（监控 openat）
-          if grep -q "ksu_handle_openat" fs/open.c; then
-            echo "Manual hook already applied to open.c, skipping."
-          else
-            sed -i '/build_open_flags(flags, mode, &opened);/a\
-            \    #ifdef CONFIG_KSU_MANUAL_HOOK\
-            \    extern int ksu_handle_openat(int *dfd, const char __user **filename_user, int *flags, int *mode);\
-            \    ksu_handle_openat(&dfd, &filename, &flags, &mode);\
-            \    #endif' fs/open.c
-          fi
-
-      # ========== 编译内核 ==========
       - name: 编译内核
         working-directory: kernel
         run: |
@@ -225,8 +213,6 @@ jobs:
           export KBUILD_BUILD_TIMESTAMP=$(date -u -d "@$(git log -1 --format=%at)" +"%a %b %d %H:%M:%S %Z %Y")
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          
-          # 生成 .config 并编译
           make -j$(nproc --all) \
             CC="ccache clang" \
             ARCH=arm64 \
@@ -236,13 +222,20 @@ jobs:
             KCFLAGS="-Wno-unknown-warning-option" \
             dipper-mi845_defconfig all
 
-      # ========== 编译 USB/IP 用户态工具（保留） ==========
+      # 收集 USB/IP 内核模块
+      - name: 收集 USB/IP 内核模块
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/usbip-out/modules
+          cp kernel/out/drivers/usb/usbip/*.ko $GITHUB_WORKSPACE/usbip-out/modules/ || true
+
+      # 设置 QEMU 用户态支持
       - name: 设置 QEMU 用户态支持
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
+      # 编译 USB/IP 用户态工具
       - name: 编译 USB/IP 用户态工具 (Docker 容器)
         run: |
           mkdir -p usbip-out/{bin,libs}
@@ -270,11 +263,9 @@ jobs:
                 libelf-dev \
                 file \
                 patchelf
-
               export ARCH=arm64
               export CROSS_COMPILE=aarch64-linux-gnu-
               export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-
               cd tools/usb/usbip
               ./autogen.sh
               ./configure \
@@ -284,17 +275,14 @@ jobs:
                          -I/workspace/kernel/arch/arm64/include\" \
                 --with-tcp-wrappers=no
               make -j1
-
               cp src/.libs/usbip /output/bin/
               cp src/.libs/usbipd /output/bin/
               cp libsrc/.libs/libusbip.so.0* /output/libs/
-
               cd /output
               BINARIES=\"bin/usbip bin/usbipd libs/libusbip.so.0*\"
               DEPS=\"\"
               for file in \$BINARIES; do
                 if [ -f \"\$file\" ]; then
-                  echo \"Collecting dependencies for \$file...\"
                   needed=\$(readelf -d \"\$file\" | grep NEEDED | awk '{print \$5}' | tr -d '[]' || true)
                   for lib in \$needed; do
                     if [[ \"\$DEPS\" != *\"\$lib\"* ]]; then
@@ -303,27 +291,22 @@ jobs:
                   done
                 fi
               done
-              for lib in \$(echo \$DEPS | tr ' ' '\\n' | sort -u); do
-                echo \"Searching for library: \$lib\"
+              for lib in \$(echo \$DEPS | tr ' ' '\n' | sort -u); do
                 libpath=\$(ldconfig -p | grep \"\$lib (\" | head -1 | awk '{print \$NF}' || true)
                 if [ -z \"\$libpath\" ]; then
                   libpath=\$(find /lib /usr/lib -name \"\$lib\" -type f 2>/dev/null | head -1 || true)
                 fi
                 if [ -n \"\$libpath\" ]; then
-                  echo \"Found: \$libpath\"
                   cp -P \"\$libpath\" libs/ 2>/dev/null || cp \"\$libpath\" libs/
                   for reallib in \$(find \"\$(dirname \"\$libpath\")\" -name \"\${lib%.so*}*\" -type f 2>/dev/null); do
                     cp -n \"\$reallib\" libs/ 2>/dev/null || true
                   done
-                else
-                  echo \"Warning: library \$lib not found\"
                 fi
               done
               ld_linux=\"/lib/ld-linux-aarch64.so.1\"
               if [ -f \"\$ld_linux\" ]; then
                 cp -P \"\$ld_linux\" libs/
               fi
-              echo \"USB/IP user-space tools build complete.\"
             "
 
       - name: 打包 USB/IP 产物
@@ -338,30 +321,29 @@ jobs:
           name: usbip-arm64-bundle
           path: usbip-arm64-bundle.tar.gz
 
-      # ========== 下载 KernelSU 管理器 APK ==========
-      - name: Download KernelSU Manager APK
+      # 下载 KernelSU Next 管理器 APK（使用官方 KernelSU Next 发布）
+      - name: Download KernelSU Next Manager APK
         run: |
-          LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest | grep "browser_download_url.*\.apk" | cut -d '"' -f 4)
+          LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/rifsxd/KernelSU-Next/releases/latest | grep "browser_download_url.*\.apk" | cut -d '"' -f 4 | head -1)
           if [ -n "$LATEST_RELEASE_URL" ]; then
-            wget -O KernelSU-Manager.apk "$LATEST_RELEASE_URL"
+            wget -O KernelSU-Next-Manager.apk "$LATEST_RELEASE_URL"
           else
-            echo "Failed to fetch KernelSU APK."
+            echo "Failed to fetch KernelSU Next APK."
             exit 1
           fi
           mkdir -p apk-output
-          cp KernelSU-Manager.apk apk-output/
+          cp KernelSU-Next-Manager.apk apk-output/
 
-      # ========== 打包 AnyKernel3 刷机包 ==========
       - name: 打包 (AnyKernel3)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 ak3
           cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/
           cp kernel/out/arch/arm64/boot/dtbo.img ak3/ || true
-          cp apk-output/KernelSU-Manager.apk ak3/
+          cp apk-output/KernelSU-Next-Manager.apk ak3/
           cd ak3
           cat >anykernel.sh <<EOF
           properties() { '
-          kernel.string=Kernel for ${{ matrix.device }} with KernelSU ${{ env.KERNELSU_VERSION }}
+          kernel.string=Kernel for ${{ matrix.device }} with KernelSU Next ${{ env.KSUVER }}
           device.name1=${{ matrix.device }}
           do.devicecheck=1
           '; }
@@ -401,8 +383,8 @@ jobs:
       - name: 上传 APK 工件
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-Manager
-          path: apk-output/KernelSU-Manager.apk
+          name: KernelSU-Next-Manager
+          path: apk-output/KernelSU-Next-Manager.apk
 
   release:
     name: 发布
@@ -427,7 +409,7 @@ jobs:
       - name: 获取 APK
         uses: actions/download-artifact@v4
         with:
-          name: KernelSU-Manager
+          name: KernelSU-Next-Manager
           path: manager
 
       - name: 获取当前时间
@@ -446,4 +428,4 @@ jobs:
           files: |
             kernel/*
             usbip/usbip-arm64-bundle.tar.gz
-            manager/KernelSU-Manager.apk
+            manager/KernelSU-Next-Manager.apk
