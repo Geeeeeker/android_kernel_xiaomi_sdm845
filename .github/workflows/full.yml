@@ -12,7 +12,6 @@ on:
 env:
   AOSP_TOOLCHAIN_BRANCH: android11-release
   AOSP_CLANG_VERSION: r383902b
-  KERNELSU_VERSION: v0.9.5      # 可改为 latest 动态获取
 
 jobs:
   build:
@@ -36,18 +35,43 @@ jobs:
         with:
           path: kernel
 
-      # 使用官方 KernelSU 集成脚本
-      - name: 集成 KernelSU
+      # ========== 修改点1：使用 SoDebug/KernelSU 替换官方 KernelSU ==========
+      - name: 集成 KernelSU (SoDebug 版)
         working-directory: kernel
         run: |
-          # 获取 KernelSU 版本（若未指定则自动取最新）
-          if [ "${{ env.KERNELSU_VERSION }}" = "latest" ]; then
-            KSU_VER=$(curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest | jq -r .tag_name)
-          else
-            KSU_VER="${{ env.KERNELSU_VERSION }}"
+          # 克隆 SoDebug/KernelSU 仓库
+          git clone https://github.com/SoDebug/KernelSU.git KernelSU_SRC
+          cd KernelSU_SRC
+          # 获取 kernelsu_id (commit hash)
+          KSU_ID=$(git show -s --format='%h')
+          # 计算 kernelsu_version (与第二份工作流一致)
+          GIT_COUNT=$(git rev-list --count HEAD)
+          KSU_VERSION=$((10000 + GIT_COUNT + 200))
+          cd ..
+
+          # 记录版本信息供后续步骤使用
+          echo "KERNELSU_ID=$KSU_ID" >> $GITHUB_ENV
+          echo "KERNELSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+
+          # 将 KernelSU 内核源码集成到 drivers/staging/kernelsu
+          rm -rf drivers/staging/kernelsu
+          mkdir -p drivers/staging/kernelsu
+          # 创建软链接指向 KernelSU_SRC/kernel
+          ln -sf ../../../KernelSU_SRC/kernel drivers/staging/kernelsu/KernelSU
+          cp KernelSU_SRC/kernel/Makefile drivers/staging/kernelsu/Makefile
+          cp KernelSU_SRC/kernel/Kconfig drivers/staging/kernelsu/Kconfig
+
+          # 在 drivers/Kconfig 中添加 source（如果尚未添加）
+          if ! grep -q "source \"drivers/staging/kernelsu/Kconfig\"" drivers/Kconfig; then
+            echo 'source "drivers/staging/kernelsu/Kconfig"' >> drivers/Kconfig
           fi
-          echo "KERNELSU_VERSION=$KSU_VER" >> $GITHUB_ENV
-          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s -- $KSU_VER
+
+          # 可选：复制 setup 分支的 setup.sh 以备不时之需
+          git clone -b setup https://github.com/SoDebug/KernelSU.git KernelSU_setup
+          cp KernelSU_setup/setup.sh ./ 2>/dev/null || true
+          rm -rf KernelSU_setup
+
+          echo "KernelSU integration from SoDebug/KernelSU completed (id=$KSU_ID, version=$KSU_VERSION)"
 
       - name: 缓存 Clang
         id: cache-clang
@@ -70,8 +94,8 @@ jobs:
           restore-keys: kernel-${{ matrix.device }}
           max-size: 5G
 
-      # 配置内核基础参数（Kprobes 已由 KernelSU 脚本自动开启，此处保留其他自定义）
-      - name: 配置内核基础参数 (OverlayFS/LTO/基础选项)
+      # 配置内核基础参数（包含 USB/IP 内建、Binder、USB串口等）
+      - name: 配置内核基础参数
         working-directory: kernel
         run: |
           DEFCONFIG="arch/arm64/configs/dipper-mi845_defconfig"
@@ -102,10 +126,23 @@ jobs:
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> $DEFCONFIG
           echo "CONFIG_TMPFS_XATTR=y" >> $DEFCONFIG
 
-          # USB/IP 配置
-          echo "CONFIG_USBIP_CORE=m" >> $DEFCONFIG
-          echo "CONFIG_USBIP_VHCI_HCD=m" >> $DEFCONFIG
-          echo "CONFIG_USBIP_HOST=m" >> $DEFCONFIG
+          # ========== USB/IP 改为内建 (y) ==========
+          echo "CONFIG_USBIP_CORE=y" >> $DEFCONFIG
+          echo "CONFIG_USBIP_VHCI_HCD=y" >> $DEFCONFIG
+          echo "CONFIG_USBIP_HOST=y" >> $DEFCONFIG
+
+          # ========== 增加 Binder 支持 ==========
+          echo "CONFIG_ANDROID_BINDER_IPC=y" >> $DEFCONFIG
+          echo "CONFIG_ANDROID_BINDERFS=y" >> $DEFCONFIG
+
+          # ========== 增加 USB 串口支持 ==========
+          echo "CONFIG_USB_SERIAL=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_CONSOLE=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_GENERIC=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_CH341=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_FTDI_SIO=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_CP210X=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_PL2303=y" >> $DEFCONFIG
 
           # Backlight 支持
           echo "CONFIG_BACKLIGHT_CLASS_DEVICE=y" >> $DEFCONFIG
@@ -179,20 +216,16 @@ jobs:
             KCFLAGS="-Wno-unknown-warning-option" \
             dipper-mi845_defconfig all
 
-      # 收集 USB/IP 内核模块
-      - name: 收集 USB/IP 内核模块
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/usbip-out/modules
-          cp kernel/out/drivers/usb/usbip/*.ko $GITHUB_WORKSPACE/usbip-out/modules/ || true
+      # ========== 删除原本的“收集 USB/IP 内核模块”步骤（因为已内建） ==========
 
-      # 设置 QEMU 用户态支持
+      # 设置 QEMU 用户态支持（用于编译 USB/IP 用户态工具）
       - name: 设置 QEMU 用户态支持
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      # 编译 USB/IP 用户态工具（修正版：使用主机内核源码树，单线程编译避免段错误）
+      # 编译 USB/IP 用户态工具（保留，用于生成 usbip/usbipd 二进制及动态库）
       - name: 编译 USB/IP 用户态工具 (Docker 容器)
         run: |
           mkdir -p usbip-out/{bin,libs}
@@ -294,7 +327,7 @@ jobs:
           name: usbip-arm64-bundle
           path: usbip-arm64-bundle.tar.gz
 
-      # 下载 KernelSU 管理器 APK
+      # 下载 KernelSU 管理器 APK（沿用官方最新版）
       - name: Download KernelSU Manager APK
         run: |
           LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest | grep "browser_download_url.*\.apk" | cut -d '"' -f 4)
