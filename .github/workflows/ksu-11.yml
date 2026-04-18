@@ -30,6 +30,7 @@ jobs:
         run: |
           sudo apt update > /dev/null
           sudo apt install -y ${{ env.PACKAGES }} > /dev/null
+
       - name: 同步仓库
         uses: actions/checkout@v4
         with:
@@ -47,6 +48,7 @@ jobs:
           fi
           echo "KERNELSU_VERSION=$KSU_VER" >> $GITHUB_ENV
           curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s -- $KSU_VER
+
       - name: 缓存 Clang
         id: cache-clang
         uses: actions/cache@v4
@@ -60,6 +62,7 @@ jobs:
           mkdir -p clang &&
           curl -LSs "https://github.com/Geeeeeker/boot/releases/download/clang-prebuilts-20260319-031015/clang-r383902b.tar.gz" |
           tar xz -C clang
+
       - name: 缓存 ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -94,20 +97,34 @@ jobs:
           echo "CONFIG_TMPFS=y" >> $DEFCONFIG
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> $DEFCONFIG
           echo "CONFIG_TMPFS_XATTR=y" >> $DEFCONFIG
-          # USB/IP 配置
-          echo "CONFIG_USBIP_CORE=m" >> $DEFCONFIG
-          echo "CONFIG_USBIP_VHCI_HCD=m" >> $DEFCONFIG
-          echo "CONFIG_USBIP_HOST=m" >> $DEFCONFIG
+          # USB/IP 配置（编译进内核）
+          echo "CONFIG_USBIP_CORE=y" >> $DEFCONFIG
+          echo "CONFIG_USBIP_VHCI_HCD=y" >> $DEFCONFIG
+          echo "CONFIG_USBIP_HOST=y" >> $DEFCONFIG
           # Backlight 支持
           echo "CONFIG_BACKLIGHT_CLASS_DEVICE=y" >> $DEFCONFIG
           echo "CONFIG_BACKLIGHT_QCOM=y" >> $DEFCONFIG
-          # zstd 压缩支持
+          # 开启 zstd 内存压缩（ZRAM 使用 zstd）
           echo "CONFIG_ZRAM=y" >> $DEFCONFIG
           echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> $DEFCONFIG
           echo "CONFIG_CRYPTO_ZSTD=y" >> $DEFCONFIG
+          # 启用 KernelSU 所需的核心选项（setup.sh 可能已添加，此处显式声明确保万无一失）
+          echo "CONFIG_KSU=y" >> $DEFCONFIG
+          echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
+          echo "CONFIG_KALLSYMS_ALL=y" >> $DEFCONFIG
+          # 基础框架
+          echo "CONFIG_USB_SERIAL=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_CONSOLE=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_GENERIC=y" >> $DEFCONFIG
+          # 核心 USB 串口驱动（覆盖 95% 以上市售模块）
+          echo "CONFIG_USB_SERIAL_CH341=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_FTDI_SIO=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_CP210X=y" >> $DEFCONFIG
+          echo "CONFIG_USB_SERIAL_PL2303=y" >> $DEFCONFIG
           # 替换 MODVERSIONS（KernelSU 需要）
           sed -i 's/CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' $DEFCONFIG
           echo "# CONFIG_MODVERSIONS is not set" >> $DEFCONFIG
+
       - name: 配置 LXC 和 Docker 支持
         working-directory: kernel
         run: |
@@ -144,6 +161,7 @@ jobs:
           if [ -f net/netfilter/xt_qtaguid.c ]; then
               patch -p0 < utils/xt_qtaguid.patch
           fi
+
       - name: 编译内核
         working-directory: kernel
         run: |
@@ -161,17 +179,20 @@ jobs:
             O=out \
             KCFLAGS="-Wno-unknown-warning-option" \
             dipper-mi845_defconfig all
-      # 收集 USB/IP 内核模块
+
+      # 收集 USB/IP 内核模块（若因内置而未产生 .ko 文件，此步骤无害）
       - name: 收集 USB/IP 内核模块
         run: |
           mkdir -p $GITHUB_WORKSPACE/usbip-out/modules
           cp kernel/out/drivers/usb/usbip/*.ko $GITHUB_WORKSPACE/usbip-out/modules/ || true
+
       # 设置 QEMU 用户态支持
       - name: 设置 QEMU 用户态支持
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
       # 编译 USB/IP 用户态工具（修正版：使用主机内核源码树，单线程编译避免段错误）
       - name: 编译 USB/IP 用户态工具 (Docker 容器)
         run: |
@@ -257,11 +278,13 @@ jobs:
               fi
               echo \"USB/IP user-space tools build and library collection complete.\"
             "
+
       - name: 打包 USB/IP 产物
         run: |
           cd usbip-out
           tar czf ../usbip-arm64-bundle.tar.gz .
           cd ..
+
       - name: 上传 USB/IP 捆绑包 (Artifact)
         uses: actions/upload-artifact@v4
         with:
@@ -280,6 +303,7 @@ jobs:
           fi
           mkdir -p apk-output
           cp KernelSU-Manager.apk apk-output/
+
       - name: 打包 (AnyKernel3)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 ak3
@@ -302,6 +326,7 @@ jobs:
           flash_boot
           EOF
           zip -qr9 Anykernel3-${{ matrix.device }}.zip * -x .git .github README.md *placeholder
+
       - name: 打包 (boot.img)
         run: |
           git clone https://android.googlesource.com/platform/system/tools/mkbootimg --depth=1 mkbootimg
@@ -312,6 +337,7 @@ jobs:
           mkbootimg_args=$(./unpack_bootimg.py --out out --boot_img boot.img --format mkbootimg)
           mv Image.gz-dtb out/kernel
           eval "./mkbootimg.py $mkbootimg_args -o boot-lineage-${{ matrix.device }}.img"
+
       - name: 上传 AnyKernel3 安装包
         uses: actions/upload-artifact@v4
         with:
@@ -361,6 +387,7 @@ jobs:
         run: |
           echo "time=$(TZ='Asia/Shanghai' date -u +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
           echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
