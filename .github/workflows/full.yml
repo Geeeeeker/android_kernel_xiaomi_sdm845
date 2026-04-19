@@ -345,11 +345,16 @@ jobs:
 
           # ---------- 修复 cfg80211_roamed API 不兼容问题 (内核 4.9) ----------
           cd drivers/net/wireless/realtek/rtl8188eu
-          # 由于源文件中该函数调用位于约 1117-1129 行，我们使用 sed 直接替换整个调用块
-          # 注意：使用上下文匹配以确保准确替换
-          sed -i '/rtw_to_roam(padapter) > 0/,/cfg80211_roamed/ {
-              /cfg80211_roamed/ {
-                  c\
+          
+          # 用 sed 直接替换有问题的代码块。注意：由于代码块跨多行，这里使用 sed 的地址范围匹配。
+          # 匹配从 "#else" 开始到对应的 "#endif" 之间的旧式 cfg80211_roamed 调用，并整体替换为新式调用。
+          sed -i '/^#else$/,/^#endif \/\*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)\*\// {
+            /cfg80211_roamed(padapter->pnetdev/ {
+              # 将包含 cfg80211_roamed 的整个语句块替换为新式调用
+              :a
+              N
+              /);/!ba
+              s/.*cfg80211_roamed.*\n.*\n.*\n.*\n.*\n.*\n.*\n.*);/\
           \t\tstruct cfg80211_roam_info roam_info = {\
           \t\t\t.bssid = cur_network->network.MacAddress,\
           \t\t\t.req_ie = pmlmepriv->assoc_req + sizeof(struct rtw_ieee80211_hdr_3addr) + 2,\
@@ -357,9 +362,8 @@ jobs:
           \t\t\t.resp_ie = pmlmepriv->assoc_rsp + sizeof(struct rtw_ieee80211_hdr_3addr) + 6,\
           \t\t\t.resp_ie_len = pmlmepriv->assoc_rsp_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 6,\
           \t\t};\
-          \t\tcfg80211_roamed(padapter->pnetdev, &roam_info, GFP_ATOMIC);
-                  d
-              }
+          \t\tcfg80211_roamed(padapter->pnetdev, \&roam_info, GFP_ATOMIC);/
+            }
           }' os_dep/linux/ioctl_cfg80211.c
 
       - name: 配置 LXC 和 Docker 额外补丁
