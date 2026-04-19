@@ -54,7 +54,7 @@ on:
         type: boolean
         default: false
       feature_rtl8188eu:
-        description: 'RTL8188EU 无线网卡驱动 (USB WiFi 模块)'
+        description: 'RTL8188EU 无线网卡驱动 (编译进内核)'
         type: boolean
         default: false
       localversion:
@@ -73,8 +73,8 @@ env:
   SUSFS_SOURCE: "https://gitlab.com/simonpunk/susfs4ksu.git"
   SUSFS_BRANCH: "kernel-4.9"
   ANDROID_VERSION: "11"
-  RTL8188EU_REPO: "https://github.com/ivanovborislav/rtl8188eu.git"
-  RTL8188EU_BRANCH: "main"
+  RTL8188EU_REPO: "https://github.com/aircrack-ng/rtl8188eus.git"
+  RTL8188EU_BRANCH: "master"
 
 permissions:
   contents: write
@@ -302,6 +302,8 @@ jobs:
             echo "CONFIG_WEXT_PRIV=y" >> $DEFCONFIG
             echo "CONFIG_CFG80211=y" >> $DEFCONFIG
             echo "CONFIG_MAC80211=y" >> $DEFCONFIG
+            # 驱动编译进内核（=y）
+            echo "CONFIG_RTL8188EU=y" >> $DEFCONFIG
           fi
           
           LOCALVER="${{ github.event.inputs.localversion }}"
@@ -312,6 +314,41 @@ jobs:
           
           echo "CONFIG_BACKLIGHT_CLASS_DEVICE=y" >> $DEFCONFIG
           echo "CONFIG_BACKLIGHT_QCOM=y" >> $DEFCONFIG
+
+      - name: 集成 RTL8188EU 驱动源码到内核树 (编译进内核)
+        if: github.event.inputs.feature_rtl8188eu == 'true'
+        working-directory: kernel
+        run: |
+          # 创建驱动目录
+          mkdir -p drivers/net/wireless/realtek/rtl8188eu
+          
+          # 克隆驱动仓库到该目录
+          git clone --depth=1 --branch ${{ env.RTL8188EU_BRANCH }} ${{ env.RTL8188EU_REPO }} drivers/net/wireless/realtek/rtl8188eu
+          
+          # 清理不需要的 git 信息
+          rm -rf drivers/net/wireless/realtek/rtl8188eu/.git
+          
+          # 创建 Kconfig 文件（如果不存在）
+          if [ ! -f drivers/net/wireless/realtek/rtl8188eu/Kconfig ]; then
+            cat > drivers/net/wireless/realtek/rtl8188eu/Kconfig << 'EOF'
+          config RTL8188EU
+          	tristate "Realtek RTL8188EU USB Wireless Network Adapter"
+          	depends on USB && WLAN && CFG80211
+          	select WIRELESS_EXT
+          	select WEXT_PRIV
+          	help
+          	  This is the driver for Realtek RTL8188EU 802.11n USB
+          	  wireless network adapters.
+          EOF
+          fi
+          
+          # 确保上层 Kconfig 包含本驱动
+          sed -i '/source "drivers\/net\/wireless\/realtek\/rtlwifi\/Kconfig"/a source "drivers/net/wireless/realtek/rtl8188eu/Kconfig"' drivers/net/wireless/realtek/Kconfig 2>/dev/null || \
+          echo 'source "drivers/net/wireless/realtek/rtl8188eu/Kconfig"' >> drivers/net/wireless/realtek/Kconfig
+          
+          # 确保上层 Makefile 包含本驱动
+          sed -i '/obj-\$(CONFIG_RTLWIFI)\t\t+= rtlwifi\//a obj-\$(CONFIG_RTL8188EU)\t\t+= rtl8188eu/' drivers/net/wireless/realtek/Makefile 2>/dev/null || \
+          echo 'obj-$(CONFIG_RTL8188EU)		+= rtl8188eu/' >> drivers/net/wireless/realtek/Makefile
 
       - name: 配置 LXC 和 Docker 额外补丁
         if: github.event.inputs.feature_lxc == 'true' || github.event.inputs.feature_docker == 'true'
@@ -373,27 +410,7 @@ jobs:
         run: |
           cp kernel/out/drivers/usb/usbip/*.ko $GITHUB_WORKSPACE/modules-out/ || true
 
-      - name: 编译 RTL8188EU 驱动模块
-        if: github.event.inputs.feature_rtl8188eu == 'true'
-        run: |
-          git clone --depth=1 --branch ${{ env.RTL8188EU_BRANCH }} ${{ env.RTL8188EU_REPO }} rtl8188eu
-          cd rtl8188eu
-          
-          # 设置与内核编译相同的环境变量，确保使用 Clang 工具链
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CC=clang
-          
-          # 清理残留
-          make clean
-          
-          # 使用内核 out 目录作为源码树，编译外部模块
-          make -C $GITHUB_WORKSPACE/kernel/out M=$(pwd) modules
-          
-          # 复制生成的 .ko 文件到模块目录
-          cp *.ko $GITHUB_WORKSPACE/modules-out/ || true
+      # 注意：RTL8188EU 已编译进内核，无需再收集 .ko
 
       - name: 打包内核模块
         run: |
