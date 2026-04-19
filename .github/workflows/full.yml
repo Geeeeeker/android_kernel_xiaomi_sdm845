@@ -480,7 +480,7 @@ jobs:
               cd tools/usb/usbip
               ./autogen.sh
               ./configure \
-                CFLAGS=\"-Wno-error -Wno-error=stringop-truncation \
+                CFLAGS=\"-fPIC -Wno-error -Wno-error=stringop-truncation \
                          -I/workspace/kernel/out/include \
                          -I/workspace/kernel/out/arch/arm64/include/generated \
                          -I/workspace/kernel/arch/arm64/include\" \
