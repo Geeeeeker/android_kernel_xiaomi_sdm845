@@ -84,10 +84,12 @@ jobs:
           # 复制 SUSFS 补丁文件
           cp ../susfs4ksu/kernel_patches/fs/* fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* include/linux/
-          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel-${{ env.SUSFS_BRANCH }}.patch ./
+          # 从 SUSFS_BRANCH 提取版本号（例如 kernel-4.9 -> 4.9）
+          KERNEL_VER=$(echo "${{ env.SUSFS_BRANCH }}" | sed 's/^kernel-//')
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel-${KERNEL_VER}.patch ./
           
           # 应用内核补丁
-          patch -p1 < 50_add_susfs_in_kernel-${{ env.SUSFS_BRANCH }}.patch || true
+          patch -p1 < 50_add_susfs_in_kernel-${KERNEL_VER}.patch || true
           
           # 应用 KernelSU 的 SUSFS 补丁
           cd ../KernelSU/
