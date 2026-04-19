@@ -33,10 +33,10 @@ on:
         description: 'Docker / Podman 支持 (OverlayFS, cgroup v1)'
         type: boolean
         default: true
-      feature_uvc_zstd:
-        description: 'UVC 摄像头 + ZSTD 压缩'
+      feature_uvc:
+        description: 'UVC 摄像头支持 (USB Video Class)'
         type: boolean
-        default: true
+        default: false
       feature_zram:
         description: 'ZRAM 内存压缩 (zstd)'
         type: boolean
@@ -49,17 +49,26 @@ on:
         description: 'KernelSU / APatch 符号支持 (KPROBES/KALLSYMS_ALL)'
         type: boolean
         default: true
+      feature_kvm:
+        description: 'KVM 虚拟化支持 (ARM64 虚拟化)'
+        type: boolean
+        default: false
+      localversion:
+        description: '内核本地版本字符串 (LOCALVERSION)'
+        type: string
+        default: '-Geeeeeker-perf'
 
 env:
   AOSP_TOOLCHAIN_BRANCH: android11-release
   AOSP_CLANG_VERSION: r383902b
-  KERNELSU_VERSION: v0.9.5
+  KERNELSU_VERSION: latest                    # 设置为 latest 动态获取最新版本
   APATCH_VERSION: 11142
   APATCH_TAG: 11142_166daa0_on_HEAD-release-signed
   MAGISK_CANARY_URL: https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk
   SUSFS_ENABLE: "true"
   SUSFS_SOURCE: "https://gitlab.com/simonpunk/susfs4ksu.git"
   SUSFS_BRANCH: "kernel-4.9"
+  ANDROID_VERSION: "11"                       # 用于产物命名
 
 permissions:
   contents: write
@@ -72,10 +81,12 @@ jobs:
       matrix:
         device:
           - dipper
+    outputs:
+      device: ${{ matrix.device }}
     steps:
       - name: 安装软件包
         env:
-          PACKAGES: ccache binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi gcc-arm-linux-gnueabi
+          PACKAGES: ccache binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi gcc-arm-linux-gnueabi p7zip-full
         run: |
           sudo apt update > /dev/null
           sudo apt install -y ${{ env.PACKAGES }} > /dev/null
@@ -158,7 +169,7 @@ jobs:
         run: |
           DEFCONFIG="arch/arm64/configs/dipper-mi845_defconfig"
           
-          # 基础系统配置（默认总是开启，但根据选项可控制）
+          # 基础系统配置
           if [[ "${{ github.event.inputs.feature_base }}" == "true" ]]; then
             echo "CONFIG_SYSVIPC=y" >> $DEFCONFIG
             echo "CONFIG_SYSVIPC_SYSCTL=y" >> $DEFCONFIG
@@ -173,7 +184,7 @@ jobs:
             echo "CONFIG_TMPFS_XATTR=y" >> $DEFCONFIG
           fi
           
-          # 禁用 LTO (避免编译错误)
+          # 禁用 LTO
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/' $DEFCONFIG
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/' $DEFCONFIG
           sed -i 's/CONFIG_THINLTO=y/CONFIG_THINLTO=n/' $DEFCONFIG
@@ -198,7 +209,6 @@ jobs:
             echo "CONFIG_USB_SERIAL_FTDI_SIO=y" >> $DEFCONFIG
             echo "CONFIG_USB_SERIAL_CP210X=y" >> $DEFCONFIG
             echo "CONFIG_USB_SERIAL_PL2303=y" >> $DEFCONFIG
-            # CH343 需要额外处理（可选）
             echo "CONFIG_USB_SERIAL_CH343=m" >> $DEFCONFIG
           fi
           
@@ -241,29 +251,28 @@ jobs:
             echo "CONFIG_TUN=m" >> $DEFCONFIG
             echo "CONFIG_CGROUP_BPF=y" >> $DEFCONFIG
           else
-            # 即使不选 Docker，OverlayFS 仍默认开启（常用）
             echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
           fi
           
-          # UVC 摄像头 + ZSTD
-          if [[ "${{ github.event.inputs.feature_uvc_zstd }}" == "true" ]]; then
+          # UVC 摄像头
+          if [[ "${{ github.event.inputs.feature_uvc }}" == "true" ]]; then
             echo "CONFIG_USB_VIDEO_CLASS=y" >> $DEFCONFIG
             echo "CONFIG_MEDIA_SUPPORT=y" >> $DEFCONFIG
             echo "CONFIG_MEDIA_CAMERA_SUPPORT=y" >> $DEFCONFIG
             echo "CONFIG_VIDEO_DEV=y" >> $DEFCONFIG
             echo "CONFIG_VIDEO_V4L2=y" >> $DEFCONFIG
-            echo "CONFIG_ZSTD_COMPRESS=y" >> $DEFCONFIG
-            echo "CONFIG_ZSTD_DECOMPRESS=y" >> $DEFCONFIG
           fi
           
-          # ZRAM (zstd)
+          # ZRAM (zstd) - 同时启用 ZSTD 压缩
           if [[ "${{ github.event.inputs.feature_zram }}" == "true" ]]; then
             echo "CONFIG_ZRAM=y" >> $DEFCONFIG
             echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> $DEFCONFIG
             echo "CONFIG_CRYPTO_ZSTD=y" >> $DEFCONFIG
+            echo "CONFIG_ZSTD_COMPRESS=y" >> $DEFCONFIG
+            echo "CONFIG_ZSTD_DECOMPRESS=y" >> $DEFCONFIG
           fi
           
-          # Android 容器支持 (Binder/Ashmem/ION)
+          # Android 容器支持
           if [[ "${{ github.event.inputs.feature_android_container }}" == "true" ]]; then
             echo "CONFIG_STAGING=y" >> $DEFCONFIG
             echo "CONFIG_ASHMEM=y" >> $DEFCONFIG
@@ -283,12 +292,23 @@ jobs:
             echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
             echo "CONFIG_DEBUG_FS=y" >> $DEFCONFIG
           else
-            # 至少保证 KernelSU 基本符号
             echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
             echo "CONFIG_KALLSYMS_ALL=y" >> $DEFCONFIG
           fi
           
-          # 禁用 MODVERSIONS (KernelSU 需要)
+          # KVM 虚拟化支持
+          if [[ "${{ github.event.inputs.feature_kvm }}" == "true" ]]; then
+            echo "CONFIG_VIRTUALIZATION=y" >> $DEFCONFIG
+            echo "CONFIG_KVM=y" >> $DEFCONFIG
+            echo "CONFIG_KVM_ARM_HOST=y" >> $DEFCONFIG
+            echo "CONFIG_KVM_ARM_PMU=y" >> $DEFCONFIG
+          fi
+          
+          # 设置 LOCALVERSION
+          LOCALVER="${{ github.event.inputs.localversion }}"
+          echo "CONFIG_LOCALVERSION=\"${LOCALVER}\"" >> $DEFCONFIG
+          
+          # 禁用 MODVERSIONS
           sed -i 's/CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' $DEFCONFIG
           echo "# CONFIG_MODVERSIONS is not set" >> $DEFCONFIG
           
@@ -296,7 +316,7 @@ jobs:
           echo "CONFIG_BACKLIGHT_CLASS_DEVICE=y" >> $DEFCONFIG
           echo "CONFIG_BACKLIGHT_QCOM=y" >> $DEFCONFIG
 
-      - name: 配置 LXC 和 Docker 额外补丁 (来自 utils 仓库)
+      - name: 配置 LXC 和 Docker 额外补丁
         if: github.event.inputs.feature_lxc == 'true' || github.event.inputs.feature_docker == 'true'
         working-directory: kernel
         run: |
@@ -450,20 +470,26 @@ jobs:
           path: usbip-arm64-bundle.tar.gz
 
       # ------------------------------------------------------------------
-      # 下载多版本管理器 APK
+      # 下载管理器 APK (KernelSU CI / APatch / Magisk)
       # ------------------------------------------------------------------
       - name: 创建 APK 输出目录
         run: mkdir -p apk-output
 
-      - name: 下载 KernelSU Manager APK
+      - name: 下载 KernelSU CI 管理器
+        id: download-ci-manager
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v4
+        with:
+          repo: rsuntk/KernelSU
+          workflow: build-manager.yml
+          workflow_conclusion: success
+          name: manager
+          path: manager
+
+      - name: 复制 KernelSU Manager APK 到输出目录
+        if: steps.download-ci-manager.outcome == 'success'
         run: |
-          LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest | grep "browser_download_url.*\.apk" | cut -d '"' -f 4)
-          if [ -n "$LATEST_RELEASE_URL" ]; then
-            wget -O apk-output/KernelSU-Manager.apk "$LATEST_RELEASE_URL"
-          else
-            echo "Failed to fetch KernelSU APK."
-            exit 1
-          fi
+          cp manager/*.apk apk-output/KernelSU-Manager.apk 2>/dev/null || echo "KernelSU CI 管理器未找到，将跳过。"
 
       - name: 下载 APatch Manager APK
         run: |
@@ -475,7 +501,7 @@ jobs:
           wget -O apk-output/Magisk-Canary.apk "${{ env.MAGISK_CANARY_URL }}"
       # ------------------------------------------------------------------
 
-      - name: 打包 (AnyKernel3)
+      - name: 打包 (AnyKernel3) 使用 7z
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 ak3
           cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/
@@ -483,7 +509,7 @@ jobs:
           cd ak3
           cat >anykernel.sh <<EOF
           properties() { '
-          kernel.string=Kernel for ${{ matrix.device }} with KernelSU ${{ env.KERNELSU_VERSION }} + SUSFS
+          kernel.string=KernelSU ${{ env.KERNELSU_VERSION }} + SUSFS for ${{ matrix.device }}
           device.name1=${{ matrix.device }}
           do.devicecheck=1
           '; }
@@ -495,7 +521,10 @@ jobs:
           split_boot
           flash_boot
           EOF
-          zip -qr9 Anykernel3-${{ matrix.device }}.zip * -x .git .github README.md *placeholder
+          ZIP_NAME="AnyKernel3-${{ matrix.device }}-${{ env.ANDROID_VERSION }}-arm64.zip"
+          7z a -tzip "../${ZIP_NAME}" * -x!.git -x!.github -x!README.md -x!*placeholder
+          echo "AK3_ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          echo "Created: ${ZIP_NAME}"
 
       - name: 打包 (boot.img)
         run: |
@@ -507,18 +536,19 @@ jobs:
           mkbootimg_args=$(./unpack_bootimg.py --out out --boot_img boot.img --format mkbootimg)
           mv Image.gz-dtb out/kernel
           eval "./mkbootimg.py $mkbootimg_args -o boot-lineage-${{ matrix.device }}.img"
+          echo "BOOT_IMG_NAME=boot-lineage-${{ matrix.device }}.img" >> $GITHUB_ENV
 
       - name: 上传 AnyKernel3 安装包
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ matrix.device }}-ak3
-          path: ak3/Anykernel3-${{ matrix.device }}.zip
+          path: ${{ env.AK3_ZIP_NAME }}
 
       - name: 上传 boot 镜像
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ matrix.device }}-boot
-          path: mkbootimg/boot-lineage-${{ matrix.device }}.img
+          path: mkbootimg/${{ env.BOOT_IMG_NAME }}
 
       - name: 上传 APK 工件
         uses: actions/upload-artifact@v4
@@ -535,7 +565,7 @@ jobs:
       - name: 获取构建产物
         uses: actions/download-artifact@v4
         with:
-          path: release-files
+          path: artifacts
           pattern: kernel-*
           merge-multiple: true
 
@@ -543,67 +573,49 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: usbip-arm64-bundle
-          path: release-files
+          path: artifacts
         continue-on-error: true
 
       - name: 获取 APK 合集
         uses: actions/download-artifact@v4
         with:
           name: Manager-APKs
-          path: release-files
+          path: artifacts
 
-      - name: 生成动态 tag 名称
-        id: tag
+      - name: 重命名发布资产为规范格式
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG_NAME="${{ github.ref_name }}"
-          else
-            TAG_NAME="v${{ env.KERNELSU_VERSION }}-${{ github.run_number }}-dipper"
+          cd artifacts
+          DEVICE="dipper"
+          ANDROID_VER="${{ env.ANDROID_VERSION }}"
+          PACKAGE_NAME="kernel"
+          
+          for file in *.zip; do
+            [ -f "$file" ] && mv "$file" "${PACKAGE_NAME}-${DEVICE}-${ANDROID_VER}.zip"
+          done
+          for file in *.img; do
+            [ -f "$file" ] && mv "$file" "${PACKAGE_NAME}-${DEVICE}-${ANDROID_VER}.img"
+          done
+          for file in *.apk; do
+            [ -f "$file" ] && mv "$file" "${PACKAGE_NAME}-${DEVICE}-${ANDROID_VER}-manager.apk"
+          done
+          if [ -f usbip-arm64-bundle.tar.gz ]; then
+            mv usbip-arm64-bundle.tar.gz "usbip-${DEVICE}-${ANDROID_VER}.tar.gz"
           fi
-          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
 
-      - name: 列出待发布文件
+      - name: 获取当前时间戳
+        id: time
         run: |
-          echo "=== 待发布文件列表 ==="
-          ls -la release-files/
+          echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+          echo "time=$(TZ='Asia/Shanghai' date -u +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
 
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TAG_NAME }}
-          name: "KernelSU ${{ env.KERNELSU_VERSION }} + SUSFS for dipper"
-          body: |
-            ## 📦 KernelSU ${{ env.KERNELSU_VERSION }} + SUSFS 内核
-
-            **设备代号**: dipper
-            **内核版本**: 4.9 (SUSFS 分支 kernel-4.9)
-            **构建时间**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-            **GitHub Run**: ${{ github.run_number }}
-
-            ### ✅ 本次构建启用的功能
-            - 基础系统配置: ${{ github.event.inputs.feature_base || 'true' }}
-            - USB Gadget/大容量存储: ${{ github.event.inputs.feature_usb_gadget || 'true' }}
-            - USB 转串口: ${{ github.event.inputs.feature_usb_serial || 'true' }}
-            - USB/IP: ${{ github.event.inputs.feature_usbip || 'true' }}
-            - LXC 容器: ${{ github.event.inputs.feature_lxc || 'true' }}
-            - Docker/Podman: ${{ github.event.inputs.feature_docker || 'true' }}
-            - UVC 摄像头 + ZSTD: ${{ github.event.inputs.feature_uvc_zstd || 'true' }}
-            - ZRAM (zstd): ${{ github.event.inputs.feature_zram || 'true' }}
-            - Android 容器 (Binder/Ashmem): ${{ github.event.inputs.feature_android_container || 'true' }}
-            - KernelSU/APatch 符号支持: ${{ github.event.inputs.feature_ksu_symbols || 'true' }}
-            - **KernelSU ${{ env.KERNELSU_VERSION }}** 完整集成
-            - **SUSFS 模块** (kernel-4.9 补丁)
-
-            ### 📁 产物文件
-            - `Anykernel3-dipper.zip` : TWRP 卡刷包
-            - `boot-lineage-dipper.img` : 可直接 fastboot 刷入的 boot 镜像
-            - `usbip-arm64-bundle.tar.gz` : USB/IP 内核模块与工具 (如果启用)
-            - `Manager-APKs/` : 三款管理器 APK
-
-            ### 🚀 快速安装
-            ```bash
-            # 方法一：TWRP 卡刷
-            adb sideload Anykernel3-dipper.zip
-
-            # 方法二：fastboot 刷入 boot 镜像
-            fastboot flash boot boot-lineage-dipper.img
+          tag_name: rel-${{ steps.time.outputs.timestamp }}
+          name: "Kernel build ${{ steps.time.outputs.time }}"
+          draft: false
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          files: |
+            artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
