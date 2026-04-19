@@ -322,6 +322,7 @@ jobs:
           git clone --depth=1 --branch ${{ env.RTL8188EU_BRANCH }} ${{ env.RTL8188EU_REPO }} drivers/net/wireless/realtek/rtl8188eu
           rm -rf drivers/net/wireless/realtek/rtl8188eu/.git
           
+          # 创建 Kconfig (如不存在)
           if [ ! -f drivers/net/wireless/realtek/rtl8188eu/Kconfig ]; then
             cat > drivers/net/wireless/realtek/rtl8188eu/Kconfig << 'EOF'
           config RTL8188EU
@@ -335,14 +336,16 @@ jobs:
           EOF
           fi
           
+          # 确保上层 Kconfig 和 Makefile 包含本驱动
           sed -i '/source "drivers\/net\/wireless\/realtek\/rtlwifi\/Kconfig"/a source "drivers/net/wireless/realtek/rtl8188eu/Kconfig"' drivers/net/wireless/realtek/Kconfig 2>/dev/null || \
           echo 'source "drivers/net/wireless/realtek/rtl8188eu/Kconfig"' >> drivers/net/wireless/realtek/Kconfig
           
           sed -i '/obj-\$(CONFIG_RTLWIFI)\t\t+= rtlwifi\//a obj-\$(CONFIG_RTL8188EU)\t\t+= rtl8188eu/' drivers/net/wireless/realtek/Makefile 2>/dev/null || \
           echo 'obj-$(CONFIG_RTL8188EU)		+= rtl8188eu/' >> drivers/net/wireless/realtek/Makefile
 
-          # 修复 cfg80211_roamed API 不兼容问题 (内核 4.9 需使用 cfg80211_roam_info)
           cd drivers/net/wireless/realtek/rtl8188eu
+          
+          # 修复1: cfg80211_roamed API 兼容性
           cat > cfg80211_roamed_fix.patch << 'PATCH'
           --- a/os_dep/linux/ioctl_cfg80211.c
           +++ b/os_dep/linux/ioctl_cfg80211.c
@@ -377,6 +380,13 @@ jobs:
            #endif
           PATCH
           patch -p1 < cfg80211_roamed_fix.patch || true
+          
+          # 修复2: GFP 标志类型警告 - 在 Makefile 中添加 -Wno-constant-conversion
+          sed -i '/^EXTRA_CFLAGS/ s/$/ -Wno-constant-conversion/' Makefile
+          # 如果 EXTRA_CFLAGS 行不存在，则追加
+          if ! grep -q "EXTRA_CFLAGS.*-Wno-constant-conversion" Makefile; then
+            echo 'EXTRA_CFLAGS += -Wno-constant-conversion' >> Makefile
+          fi
 
       - name: 配置 LXC 和 Docker 额外补丁
         if: github.event.inputs.feature_lxc == 'true' || github.event.inputs.feature_docker == 'true'
