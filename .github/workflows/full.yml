@@ -20,10 +20,12 @@ env:
   SUSFS_SOURCE: "https://gitlab.com/simonpunk/susfs4ksu.git"
   SUSFS_BRANCH: "kernel-4.9"
 
+permissions:
+  contents: write   # 确保 release job 有写入权限
+
 jobs:
   build:
     name: 编译内核
-    permissions: { contents: write }
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -402,15 +404,15 @@ jobs:
 
   release:
     name: 发布
-    permissions: { contents: write }
     runs-on: ubuntu-latest
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    # 修正触发条件：手动触发或 tag 推送都执行
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     steps:
       - name: 获取构建产物
         uses: actions/download-artifact@v4
         with:
-          path: kernel
+          path: release-files
           pattern: kernel-*
           merge-multiple: true
 
@@ -418,28 +420,61 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: usbip-arm64-bundle
-          path: usbip
+          path: release-files
 
       - name: 获取 APK 合集
         uses: actions/download-artifact@v4
         with:
           name: Manager-APKs
-          path: manager
+          path: release-files
 
-      - name: 获取当前时间
-        id: time
+      - name: 生成动态 tag 名称
+        id: tag
         run: |
-          echo "time=$(TZ='Asia/Shanghai' date -u +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
-          echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+          else
+            TAG_NAME="v${{ env.KERNELSU_VERSION }}-${{ github.run_number }}-${{ matrix.device }}"
+          fi
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+
+      - name: 列出待发布文件
+        run: |
+          echo "=== 待发布文件列表 ==="
+          ls -la release-files/
 
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: ${{ startsWith(github.ref_name, 'dev/') }}
-          files: |
-            kernel/*
-            usbip/usbip-arm64-bundle.tar.gz
-            manager/*.apk
+          tag_name: ${{ env.TAG_NAME }}
+          name: "KernelSU ${{ env.KERNELSU_VERSION }} + SUSFS for ${{ matrix.device }}"
+          body: |
+            ## 📦 KernelSU ${{ env.KERNELSU_VERSION }} + SUSFS 内核
+
+            **设备代号**: ${{ matrix.device }}
+            **内核版本**: 4.9 (SUSFS 分支 kernel-4.9)
+            **构建时间**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+            **GitHub Run**: ${{ github.run_number }}
+
+            ### ✅ 功能特性
+            - KernelSU ${{ env.KERNELSU_VERSION }} 完整支持
+            - SUSFS 模块集成 (kernel-4.9 补丁)
+            - APatch / KernelSU 符号支持 (KALLSYMS_ALL + KPROBES)
+            - LXC / Docker 容器支持
+            - USB/IP 内核模块与用户态工具
+            - OverlayFS / ZRAM (zstd) / 完整 USB 转串口驱动
+            - 预置 APK：KernelSU Manager、APatch Manager、Magisk Canary
+
+            ### 📁 产物文件
+            - `Anykernel3-*.zip` : TWRP 卡刷包
+            - `boot-lineage-*.img` : 可直接 fastboot 刷入的 boot 镜像
+            - `usbip-arm64-bundle.tar.gz` : USB/IP 内核模块与工具
+            - `Manager-APKs/` : 三款管理器 APK
+
+            ### 🚀 快速安装
+            ```bash
+            # 方法一：TWRP 卡刷
+            adb sideload Anykernel3-dipper.zip
+
+            # 方法二：fastboot 刷入 boot 镜像
+            fastboot flash boot boot-lineage-dipper.img
