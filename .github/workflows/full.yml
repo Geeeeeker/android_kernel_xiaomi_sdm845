@@ -65,7 +65,7 @@ on:
 env:
   AOSP_TOOLCHAIN_BRANCH: android11-release
   AOSP_CLANG_VERSION: r383902b
-  KERNELSU_VERSION: v0.9.5                # 固定为稳定版本，避免头文件缺失
+  KERNELSU_VERSION: v0.9.5
   APATCH_VERSION: 11142
   APATCH_TAG: 11142_166daa0_on_HEAD-release-signed
   MAGISK_CANARY_URL: https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk
@@ -74,7 +74,7 @@ env:
   SUSFS_BRANCH: "kernel-4.9"
   ANDROID_VERSION: "11"
   RTL8188EU_REPO: "https://github.com/ivanovborislav/rtl8188eu.git"
-  RTL8188EU_BRANCH: "master"
+  RTL8188EU_BRANCH: "main"                # ✅ 修正分支名为 main
 
 permissions:
   contents: write
