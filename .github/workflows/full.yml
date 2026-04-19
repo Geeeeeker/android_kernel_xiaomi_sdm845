@@ -378,12 +378,20 @@ jobs:
         run: |
           git clone --depth=1 --branch ${{ env.RTL8188EU_BRANCH }} ${{ env.RTL8188EU_REPO }} rtl8188eu
           cd rtl8188eu
-          sed -i 's/CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile
-          sed -i 's/CONFIG_PLATFORM_ARM_SUN50IW1P1 = n/CONFIG_PLATFORM_ARM_SUN50IW1P1 = y/' Makefile
-          export KSRC=$GITHUB_WORKSPACE/kernel/out
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          make modules
+          
+          # 清理可能存在的残留文件
+          make clean
+          
+          # 关键修改：直接使用 make 命令，通过 M=$(pwd) 指定模块源码目录，并明确指定内核源码路径 (KSRC)
+          # 这样会绕过 Makefile 中针对特定平台的预设路径
+          make ARCH=arm64 \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               KSRC=$GITHUB_WORKSPACE/kernel/out \
+               -C $GITHUB_WORKSPACE/kernel/out \
+               M=$(pwd) \
+               modules
+          
+          # 复制生成的 .ko 文件到模块目录
           cp *.ko $GITHUB_WORKSPACE/modules-out/ || true
 
       - name: 打包内核模块
