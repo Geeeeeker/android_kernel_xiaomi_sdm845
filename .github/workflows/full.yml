@@ -302,7 +302,6 @@ jobs:
             echo "CONFIG_WEXT_PRIV=y" >> $DEFCONFIG
             echo "CONFIG_CFG80211=y" >> $DEFCONFIG
             echo "CONFIG_MAC80211=y" >> $DEFCONFIG
-            # 驱动编译进内核（=y）
             echo "CONFIG_RTL8188EU=y" >> $DEFCONFIG
           fi
           
@@ -319,16 +318,10 @@ jobs:
         if: github.event.inputs.feature_rtl8188eu == 'true'
         working-directory: kernel
         run: |
-          # 创建驱动目录
           mkdir -p drivers/net/wireless/realtek/rtl8188eu
-          
-          # 克隆驱动仓库到该目录
           git clone --depth=1 --branch ${{ env.RTL8188EU_BRANCH }} ${{ env.RTL8188EU_REPO }} drivers/net/wireless/realtek/rtl8188eu
-          
-          # 清理不需要的 git 信息
           rm -rf drivers/net/wireless/realtek/rtl8188eu/.git
           
-          # 创建 Kconfig 文件（如果不存在）
           if [ ! -f drivers/net/wireless/realtek/rtl8188eu/Kconfig ]; then
             cat > drivers/net/wireless/realtek/rtl8188eu/Kconfig << 'EOF'
           config RTL8188EU
@@ -342,13 +335,48 @@ jobs:
           EOF
           fi
           
-          # 确保上层 Kconfig 包含本驱动
           sed -i '/source "drivers\/net\/wireless\/realtek\/rtlwifi\/Kconfig"/a source "drivers/net/wireless/realtek/rtl8188eu/Kconfig"' drivers/net/wireless/realtek/Kconfig 2>/dev/null || \
           echo 'source "drivers/net/wireless/realtek/rtl8188eu/Kconfig"' >> drivers/net/wireless/realtek/Kconfig
           
-          # 确保上层 Makefile 包含本驱动
           sed -i '/obj-\$(CONFIG_RTLWIFI)\t\t+= rtlwifi\//a obj-\$(CONFIG_RTL8188EU)\t\t+= rtl8188eu/' drivers/net/wireless/realtek/Makefile 2>/dev/null || \
           echo 'obj-$(CONFIG_RTL8188EU)		+= rtl8188eu/' >> drivers/net/wireless/realtek/Makefile
+
+          # 修复 cfg80211_roamed API 不兼容问题 (内核 4.9 需使用 cfg80211_roam_info)
+          cd drivers/net/wireless/realtek/rtl8188eu
+          cat > cfg80211_roamed_fix.patch << 'PATCH'
+          --- a/os_dep/linux/ioctl_cfg80211.c
+          +++ b/os_dep/linux/ioctl_cfg80211.c
+          @@ -1120,14 +1120,24 @@ void rtw_cfg80211_indicate_connect(struct adapter *padapter)
+           			, cur_network->network.MacAddress
+           			, WLAN_STATUS_SUCCESS, GFP_ATOMIC);
+           #else
+          -		cfg80211_roamed(padapter->pnetdev
+          +		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0))
+          +		{
+          +			struct cfg80211_roam_info roam_info = {
+          +				.bssid = cur_network->network.MacAddress,
+          +				.req_ie = pmlmepriv->assoc_req + sizeof(struct rtw_ieee80211_hdr_3addr) + 2,
+          +				.req_ie_len = pmlmepriv->assoc_req_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 2,
+          +				.resp_ie = pmlmepriv->assoc_rsp + sizeof(struct rtw_ieee80211_hdr_3addr) + 6,
+          +				.resp_ie_len = pmlmepriv->assoc_rsp_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 6,
+          +			};
+          +			cfg80211_roamed(padapter->pnetdev, &roam_info, GFP_KERNEL);
+          +		}
+          +		#else
+          +		cfg80211_roamed(padapter->pnetdev
+           			, cur_network->network.MacAddress
+           			, pmlmepriv->assoc_req + sizeof(struct rtw_ieee80211_hdr_3addr) + 2
+           			, pmlmepriv->assoc_req_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 2
+           			, pmlmepriv->assoc_rsp + sizeof(struct rtw_ieee80211_hdr_3addr) + 6
+           			, pmlmepriv->assoc_rsp_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 6
+          -			, GFP_KERNEL);
+          +			, GFP_KERNEL);
+          +		#endif
+           #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0) */
+           	}
+           #endif
+          PATCH
+          patch -p1 < cfg80211_roamed_fix.patch || true
 
       - name: 配置 LXC 和 Docker 额外补丁
         if: github.event.inputs.feature_lxc == 'true' || github.event.inputs.feature_docker == 'true'
@@ -409,8 +437,6 @@ jobs:
         if: github.event.inputs.feature_usbip == 'true'
         run: |
           cp kernel/out/drivers/usb/usbip/*.ko $GITHUB_WORKSPACE/modules-out/ || true
-
-      # 注意：RTL8188EU 已编译进内核，无需再收集 .ko
 
       - name: 打包内核模块
         run: |
