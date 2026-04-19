@@ -1,4 +1,4 @@
-name: 编译内核(KSU + SUSFS + APatch/Magisk APK)
+name: 编译内核(KSU + SUSFS + 多特性可选)
 
 on:
   push:
@@ -6,8 +6,49 @@ on:
       - dev/*
       - stable/*
     tags:
-      - 'v*'                     # tag 触发，用于 release
+      - 'v*'
   workflow_dispatch:
+    inputs:
+      feature_base:
+        description: '基础系统配置 (SYSVIPC, EPOLL, TMPFS等)'
+        type: boolean
+        default: true
+      feature_usb_gadget:
+        description: 'USB Gadget / 大容量存储 (Mass Storage)'
+        type: boolean
+        default: true
+      feature_usb_serial:
+        description: 'USB 转串口 (CH340/CH341, CH343)'
+        type: boolean
+        default: true
+      feature_usbip:
+        description: 'USB/IP 支持 (内核模块 + 用户空间工具)'
+        type: boolean
+        default: true
+      feature_lxc:
+        description: 'LXC 容器完整支持'
+        type: boolean
+        default: true
+      feature_docker:
+        description: 'Docker / Podman 支持 (OverlayFS, cgroup v1)'
+        type: boolean
+        default: true
+      feature_uvc_zstd:
+        description: 'UVC 摄像头 + ZSTD 压缩'
+        type: boolean
+        default: true
+      feature_zram:
+        description: 'ZRAM 内存压缩 (zstd)'
+        type: boolean
+        default: true
+      feature_android_container:
+        description: 'Android 容器支持 (Binder/Ashmem/ION，用于 Waydroid/Redroid)'
+        type: boolean
+        default: true
+      feature_ksu_symbols:
+        description: 'KernelSU / APatch 符号支持 (KPROBES/KALLSYMS_ALL)'
+        type: boolean
+        default: true
 
 env:
   AOSP_TOOLCHAIN_BRANCH: android11-release
@@ -21,7 +62,7 @@ env:
   SUSFS_BRANCH: "kernel-4.9"
 
 permissions:
-  contents: write   # 确保 release job 有写入权限
+  contents: write
 
 jobs:
   build:
@@ -112,73 +153,151 @@ jobs:
           restore-keys: kernel-${{ matrix.device }}
           max-size: 5G
 
-      # 配置内核基础参数（包含 Apache/APatch 所需完整符号支持）
-      - name: 配置内核基础参数 (OverlayFS/LTO/符号表/APatch支持)
+      - name: 配置内核基础参数 (根据用户选项动态调整)
         working-directory: kernel
         run: |
           DEFCONFIG="arch/arm64/configs/dipper-mi845_defconfig"
-
-          # 开启 OverlayFS
-          echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
-          # 禁用 LTO
+          
+          # 基础系统配置（默认总是开启，但根据选项可控制）
+          if [[ "${{ github.event.inputs.feature_base }}" == "true" ]]; then
+            echo "CONFIG_SYSVIPC=y" >> $DEFCONFIG
+            echo "CONFIG_SYSVIPC_SYSCTL=y" >> $DEFCONFIG
+            echo "CONFIG_SYSVIPC_COMPAT=y" >> $DEFCONFIG
+            echo "CONFIG_EPOLL=y" >> $DEFCONFIG
+            echo "CONFIG_EVENTFD=y" >> $DEFCONFIG
+            echo "CONFIG_SIGNALFD=y" >> $DEFCONFIG
+            echo "CONFIG_INOTIFY_USER=y" >> $DEFCONFIG
+            echo "CONFIG_SHMEM=y" >> $DEFCONFIG
+            echo "CONFIG_TMPFS=y" >> $DEFCONFIG
+            echo "CONFIG_TMPFS_POSIX_ACL=y" >> $DEFCONFIG
+            echo "CONFIG_TMPFS_XATTR=y" >> $DEFCONFIG
+          fi
+          
+          # 禁用 LTO (避免编译错误)
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/' $DEFCONFIG
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/' $DEFCONFIG
           sed -i 's/CONFIG_THINLTO=y/CONFIG_THINLTO=n/' $DEFCONFIG
           echo "CONFIG_LTO_NONE=y" >> $DEFCONFIG
-          # 禁用 CC_WERROR
           echo "CONFIG_CC_WERROR=n" >> $DEFCONFIG
-
-          # 用户要求的配置选项
-          echo "CONFIG_ASHMEM=y" >> $DEFCONFIG
-          echo "CONFIG_SYSVIPC=y" >> $DEFCONFIG
-          echo "CONFIG_SYSVIPC_SYSCTL=y" >> $DEFCONFIG
-          echo "CONFIG_SYSVIPC_COMPAT=y" >> $DEFCONFIG
-          echo "CONFIG_EPOLL=y" >> $DEFCONFIG
-          echo "CONFIG_EVENTFD=y" >> $DEFCONFIG
-          echo "CONFIG_SIGNALFD=y" >> $DEFCONFIG
-          echo "CONFIG_INOTIFY_USER=y" >> $DEFCONFIG
-          echo "CONFIG_SHMEM=y" >> $DEFCONFIG
-          echo "CONFIG_TMPFS=y" >> $DEFCONFIG
-          echo "CONFIG_TMPFS_POSIX_ACL=y" >> $DEFCONFIG
-          echo "CONFIG_TMPFS_XATTR=y" >> $DEFCONFIG
-
-          # USB/IP 配置（编译进内核）
-          echo "CONFIG_USBIP_CORE=y" >> $DEFCONFIG
-          echo "CONFIG_USBIP_VHCI_HCD=y" >> $DEFCONFIG
-          echo "CONFIG_USBIP_HOST=y" >> $DEFCONFIG
-
+          
+          # USB Gadget / 大容量存储
+          if [[ "${{ github.event.inputs.feature_usb_gadget }}" == "true" ]]; then
+            echo "CONFIG_USB_GADGET=y" >> $DEFCONFIG
+            echo "CONFIG_USB_CONFIGFS=y" >> $DEFCONFIG
+            echo "CONFIG_USB_CONFIGFS_MASS_STORAGE=y" >> $DEFCONFIG
+            echo "CONFIG_USB_F_MASS_STORAGE=y" >> $DEFCONFIG
+            echo "CONFIG_USB_MASS_STORAGE=y" >> $DEFCONFIG
+          fi
+          
+          # USB 转串口
+          if [[ "${{ github.event.inputs.feature_usb_serial }}" == "true" ]]; then
+            echo "CONFIG_USB_SERIAL=y" >> $DEFCONFIG
+            echo "CONFIG_USB_SERIAL_CONSOLE=y" >> $DEFCONFIG
+            echo "CONFIG_USB_SERIAL_GENERIC=y" >> $DEFCONFIG
+            echo "CONFIG_USB_SERIAL_CH341=y" >> $DEFCONFIG
+            echo "CONFIG_USB_SERIAL_FTDI_SIO=y" >> $DEFCONFIG
+            echo "CONFIG_USB_SERIAL_CP210X=y" >> $DEFCONFIG
+            echo "CONFIG_USB_SERIAL_PL2303=y" >> $DEFCONFIG
+            # CH343 需要额外处理（可选）
+            echo "CONFIG_USB_SERIAL_CH343=m" >> $DEFCONFIG
+          fi
+          
+          # USB/IP
+          if [[ "${{ github.event.inputs.feature_usbip }}" == "true" ]]; then
+            echo "CONFIG_USBIP_CORE=y" >> $DEFCONFIG
+            echo "CONFIG_USBIP_VHCI_HCD=y" >> $DEFCONFIG
+            echo "CONFIG_USBIP_HOST=y" >> $DEFCONFIG
+          fi
+          
+          # LXC 容器
+          if [[ "${{ github.event.inputs.feature_lxc }}" == "true" ]]; then
+            echo "CONFIG_NAMESPACES=y" >> $DEFCONFIG
+            echo "CONFIG_CGROUPS=y" >> $DEFCONFIG
+            echo "CONFIG_UTS_NS=y" >> $DEFCONFIG
+            echo "CONFIG_IPC_NS=y" >> $DEFCONFIG
+            echo "CONFIG_USER_NS=y" >> $DEFCONFIG
+            echo "CONFIG_PID_NS=y" >> $DEFCONFIG
+            echo "CONFIG_NET_NS=y" >> $DEFCONFIG
+            echo "CONFIG_DEVPTS_MULTIPLE_INSTANCES=y" >> $DEFCONFIG
+            echo "CONFIG_CGROUP_DEVICE=y" >> $DEFCONFIG
+            echo "CONFIG_CGROUP_CPUACCT=y" >> $DEFCONFIG
+            echo "CONFIG_CGROUP_FREEZER=y" >> $DEFCONFIG
+            echo "CONFIG_CGROUP_SCHED=y" >> $DEFCONFIG
+            echo "CONFIG_CGROUP_PIDS=y" >> $DEFCONFIG
+            echo "CONFIG_MEMCG=y" >> $DEFCONFIG
+            echo "CONFIG_BLK_CGROUP=y" >> $DEFCONFIG
+            echo "CONFIG_CFS_BANDWIDTH=y" >> $DEFCONFIG
+            echo "CONFIG_RT_GROUP_SCHED=y" >> $DEFCONFIG
+            echo "CONFIG_VETH=y" >> $DEFCONFIG
+            echo "CONFIG_BRIDGE=y" >> $DEFCONFIG
+          fi
+          
+          # Docker / OverlayFS
+          if [[ "${{ github.event.inputs.feature_docker }}" == "true" ]]; then
+            echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
+            echo "CONFIG_FUSE_FS=m" >> $DEFCONFIG
+            echo "CONFIG_SECCOMP=y" >> $DEFCONFIG
+            echo "CONFIG_SECCOMP_FILTER=y" >> $DEFCONFIG
+            echo "CONFIG_TUN=m" >> $DEFCONFIG
+            echo "CONFIG_CGROUP_BPF=y" >> $DEFCONFIG
+          else
+            # 即使不选 Docker，OverlayFS 仍默认开启（常用）
+            echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
+          fi
+          
+          # UVC 摄像头 + ZSTD
+          if [[ "${{ github.event.inputs.feature_uvc_zstd }}" == "true" ]]; then
+            echo "CONFIG_USB_VIDEO_CLASS=y" >> $DEFCONFIG
+            echo "CONFIG_MEDIA_SUPPORT=y" >> $DEFCONFIG
+            echo "CONFIG_MEDIA_CAMERA_SUPPORT=y" >> $DEFCONFIG
+            echo "CONFIG_VIDEO_DEV=y" >> $DEFCONFIG
+            echo "CONFIG_VIDEO_V4L2=y" >> $DEFCONFIG
+            echo "CONFIG_ZSTD_COMPRESS=y" >> $DEFCONFIG
+            echo "CONFIG_ZSTD_DECOMPRESS=y" >> $DEFCONFIG
+          fi
+          
+          # ZRAM (zstd)
+          if [[ "${{ github.event.inputs.feature_zram }}" == "true" ]]; then
+            echo "CONFIG_ZRAM=y" >> $DEFCONFIG
+            echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> $DEFCONFIG
+            echo "CONFIG_CRYPTO_ZSTD=y" >> $DEFCONFIG
+          fi
+          
+          # Android 容器支持 (Binder/Ashmem/ION)
+          if [[ "${{ github.event.inputs.feature_android_container }}" == "true" ]]; then
+            echo "CONFIG_STAGING=y" >> $DEFCONFIG
+            echo "CONFIG_ASHMEM=y" >> $DEFCONFIG
+            echo "CONFIG_ANDROID=y" >> $DEFCONFIG
+            echo "CONFIG_ANDROID_BINDER_IPC=y" >> $DEFCONFIG
+            echo "CONFIG_ANDROID_BINDERFS=y" >> $DEFCONFIG
+            echo "CONFIG_ION=y" >> $DEFCONFIG
+            echo "CONFIG_ION_SYSTEM_HEAP=y" >> $DEFCONFIG
+          fi
+          
+          # KernelSU / APatch 符号支持
+          if [[ "${{ github.event.inputs.feature_ksu_symbols }}" == "true" ]]; then
+            echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
+            echo "CONFIG_KALLSYMS_ALL=y" >> $DEFCONFIG
+            echo "CONFIG_KPROBES=y" >> $DEFCONFIG
+            echo "CONFIG_HAVE_KPROBES=y" >> $DEFCONFIG
+            echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
+            echo "CONFIG_DEBUG_FS=y" >> $DEFCONFIG
+          else
+            # 至少保证 KernelSU 基本符号
+            echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
+            echo "CONFIG_KALLSYMS_ALL=y" >> $DEFCONFIG
+          fi
+          
+          # 禁用 MODVERSIONS (KernelSU 需要)
+          sed -i 's/CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' $DEFCONFIG
+          echo "# CONFIG_MODVERSIONS is not set" >> $DEFCONFIG
+          
           # Backlight 支持
           echo "CONFIG_BACKLIGHT_CLASS_DEVICE=y" >> $DEFCONFIG
           echo "CONFIG_BACKLIGHT_QCOM=y" >> $DEFCONFIG
 
-          # 开启 zstd 内存压缩（ZRAM 使用 zstd）
-          echo "CONFIG_ZRAM=y" >> $DEFCONFIG
-          echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> $DEFCONFIG
-          echo "CONFIG_CRYPTO_ZSTD=y" >> $DEFCONFIG
-
-          # ====== APatch / KernelSU 符号支持（完整） ======
-          echo "# APatch & KernelSU symbol support" >> $DEFCONFIG
-          echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
-          echo "CONFIG_KALLSYMS_ALL=y" >> $DEFCONFIG
-          echo "CONFIG_KPROBES=y" >> $DEFCONFIG          # APatch 依赖 kprobes
-          echo "CONFIG_HAVE_KPROBES=y" >> $DEFCONFIG
-          echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
-          # ==============================================
-
-          # 基础框架
-          echo "CONFIG_USB_SERIAL=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_CONSOLE=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_GENERIC=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_CH341=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_FTDI_SIO=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_CP210X=y" >> $DEFCONFIG
-          echo "CONFIG_USB_SERIAL_PL2303=y" >> $DEFCONFIG
-
-          # 替换 MODVERSIONS（KernelSU 需要）
-          sed -i 's/CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' $DEFCONFIG
-          echo "# CONFIG_MODVERSIONS is not set" >> $DEFCONFIG
-
-      - name: 配置 LXC 和 Docker 支持
+      - name: 配置 LXC 和 Docker 额外补丁 (来自 utils 仓库)
+        if: github.event.inputs.feature_lxc == 'true' || github.event.inputs.feature_docker == 'true'
         working-directory: kernel
         run: |
           DEFCONFIG="arch/arm64/configs/dipper-mi845_defconfig"
@@ -230,17 +349,20 @@ jobs:
             dipper-mi845_defconfig all
 
       - name: 收集 USB/IP 内核模块
+        if: github.event.inputs.feature_usbip == 'true'
         run: |
           mkdir -p $GITHUB_WORKSPACE/usbip-out/modules
           cp kernel/out/drivers/usb/usbip/*.ko $GITHUB_WORKSPACE/usbip-out/modules/ || true
 
-      - name: 设置 QEMU 用户态支持
+      - name: 设置 QEMU 用户态支持 (USB/IP 工具编译)
+        if: github.event.inputs.feature_usbip == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
       - name: 编译 USB/IP 用户态工具 (Docker 容器)
+        if: github.event.inputs.feature_usbip == 'true'
         run: |
           mkdir -p usbip-out/{bin,libs}
           docker run --rm --platform linux/arm64 \
@@ -314,19 +436,21 @@ jobs:
             "
 
       - name: 打包 USB/IP 产物
+        if: github.event.inputs.feature_usbip == 'true'
         run: |
           cd usbip-out
           tar czf ../usbip-arm64-bundle.tar.gz .
           cd ..
 
       - name: 上传 USB/IP 捆绑包 (Artifact)
+        if: github.event.inputs.feature_usbip == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: usbip-arm64-bundle
           path: usbip-arm64-bundle.tar.gz
 
       # ------------------------------------------------------------------
-      # 下载多版本管理器 APK：KernelSU / APatch / Magisk Canary
+      # 下载多版本管理器 APK
       # ------------------------------------------------------------------
       - name: 创建 APK 输出目录
         run: mkdir -p apk-output
@@ -406,7 +530,6 @@ jobs:
     name: 发布
     runs-on: ubuntu-latest
     needs: build
-    # 修正触发条件：手动触发或 tag 推送都执行
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     steps:
       - name: 获取构建产物
@@ -416,11 +539,12 @@ jobs:
           pattern: kernel-*
           merge-multiple: true
 
-      - name: 获取 USB/IP 捆绑包
+      - name: 获取 USB/IP 捆绑包 (如果存在)
         uses: actions/download-artifact@v4
         with:
           name: usbip-arm64-bundle
           path: release-files
+        continue-on-error: true
 
       - name: 获取 APK 合集
         uses: actions/download-artifact@v4
@@ -434,7 +558,7 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG_NAME="${{ github.ref_name }}"
           else
-            TAG_NAME="v${{ env.KERNELSU_VERSION }}-${{ github.run_number }}-${{ matrix.device }}"
+            TAG_NAME="v${{ env.KERNELSU_VERSION }}-${{ github.run_number }}-dipper"
           fi
           echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
 
@@ -447,28 +571,33 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
-          name: "KernelSU ${{ env.KERNELSU_VERSION }} + SUSFS for ${{ matrix.device }}"
+          name: "KernelSU ${{ env.KERNELSU_VERSION }} + SUSFS for dipper"
           body: |
             ## 📦 KernelSU ${{ env.KERNELSU_VERSION }} + SUSFS 内核
 
-            **设备代号**: ${{ matrix.device }}
+            **设备代号**: dipper
             **内核版本**: 4.9 (SUSFS 分支 kernel-4.9)
             **构建时间**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
             **GitHub Run**: ${{ github.run_number }}
 
-            ### ✅ 功能特性
-            - KernelSU ${{ env.KERNELSU_VERSION }} 完整支持
-            - SUSFS 模块集成 (kernel-4.9 补丁)
-            - APatch / KernelSU 符号支持 (KALLSYMS_ALL + KPROBES)
-            - LXC / Docker 容器支持
-            - USB/IP 内核模块与用户态工具
-            - OverlayFS / ZRAM (zstd) / 完整 USB 转串口驱动
-            - 预置 APK：KernelSU Manager、APatch Manager、Magisk Canary
+            ### ✅ 本次构建启用的功能
+            - 基础系统配置: ${{ github.event.inputs.feature_base || 'true' }}
+            - USB Gadget/大容量存储: ${{ github.event.inputs.feature_usb_gadget || 'true' }}
+            - USB 转串口: ${{ github.event.inputs.feature_usb_serial || 'true' }}
+            - USB/IP: ${{ github.event.inputs.feature_usbip || 'true' }}
+            - LXC 容器: ${{ github.event.inputs.feature_lxc || 'true' }}
+            - Docker/Podman: ${{ github.event.inputs.feature_docker || 'true' }}
+            - UVC 摄像头 + ZSTD: ${{ github.event.inputs.feature_uvc_zstd || 'true' }}
+            - ZRAM (zstd): ${{ github.event.inputs.feature_zram || 'true' }}
+            - Android 容器 (Binder/Ashmem): ${{ github.event.inputs.feature_android_container || 'true' }}
+            - KernelSU/APatch 符号支持: ${{ github.event.inputs.feature_ksu_symbols || 'true' }}
+            - **KernelSU ${{ env.KERNELSU_VERSION }}** 完整集成
+            - **SUSFS 模块** (kernel-4.9 补丁)
 
             ### 📁 产物文件
-            - `Anykernel3-*.zip` : TWRP 卡刷包
-            - `boot-lineage-*.img` : 可直接 fastboot 刷入的 boot 镜像
-            - `usbip-arm64-bundle.tar.gz` : USB/IP 内核模块与工具
+            - `Anykernel3-dipper.zip` : TWRP 卡刷包
+            - `boot-lineage-dipper.img` : 可直接 fastboot 刷入的 boot 镜像
+            - `usbip-arm64-bundle.tar.gz` : USB/IP 内核模块与工具 (如果启用)
             - `Manager-APKs/` : 三款管理器 APK
 
             ### 🚀 快速安装
