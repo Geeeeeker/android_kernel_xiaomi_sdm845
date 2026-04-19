@@ -138,6 +138,7 @@ jobs:
           
           patch -p1 < 50_add_susfs_in_kernel-${KERNEL_VER}.patch || true
           
+          # 修复 fdinfo.c 中的变量名错误
           sed -i '144s/mask,/mark->mask,/' fs/notify/fdinfo.c
           
           cd ../KernelSU/
@@ -378,21 +379,18 @@ jobs:
           git clone --depth=1 --branch ${{ env.RTL8188EU_BRANCH }} ${{ env.RTL8188EU_REPO }} rtl8188eu
           cd rtl8188eu
           
-          # 清理残留
-          make clean
-          
-          # 设置与内核编译相同的工具链和环境变量
+          # 设置与内核编译相同的环境变量，确保使用 Clang 工具链
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CC="ccache clang"
-          export LLVM=1
+          export CC=clang
           
-          # 直接调用内核构建系统编译外部模块
-          make -C $GITHUB_WORKSPACE/kernel/out \
-               M=$(pwd) \
-               modules
+          # 清理残留
+          make clean
+          
+          # 使用内核 out 目录作为源码树，编译外部模块
+          make -C $GITHUB_WORKSPACE/kernel/out M=$(pwd) modules
           
           # 复制生成的 .ko 文件到模块目录
           cp *.ko $GITHUB_WORKSPACE/modules-out/ || true
