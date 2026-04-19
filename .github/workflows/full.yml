@@ -12,14 +12,13 @@ on:
 env:
   AOSP_TOOLCHAIN_BRANCH: android11-release
   AOSP_CLANG_VERSION: r383902b
-  KERNELSU_VERSION: v0.9.5      # 可改为 latest 动态获取
+  KERNELSU_VERSION: v0.9.5
   APATCH_VERSION: 11142
   APATCH_TAG: 11142_166daa0_on_HEAD-release-signed
   MAGISK_CANARY_URL: https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk
-  # SUSFS 配置
   SUSFS_ENABLE: "true"
   SUSFS_SOURCE: "https://gitlab.com/simonpunk/susfs4ksu.git"
-  SUSFS_BRANCH: "kernel-4.9"     # 适配 dipper 的 4.9 内核
+  SUSFS_BRANCH: "kernel-4.9"
 
 jobs:
   build:
@@ -46,7 +45,6 @@ jobs:
       - name: 克隆 KernelSU 和 SUSFS
         working-directory: kernel
         run: |
-          # 确定 KernelSU 版本
           if [ "${{ env.KERNELSU_VERSION }}" = "latest" ]; then
             KSU_VER=$(curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest | jq -r .tag_name)
           else
@@ -54,10 +52,8 @@ jobs:
           fi
           echo "KERNELSU_VERSION=$KSU_VER" >> $GITHUB_ENV
           
-          # 克隆 KernelSU 仓库
           git clone --depth=1 --branch $KSU_VER https://github.com/tiann/KernelSU.git ../KernelSU
           
-          # 克隆 SUSFS
           if [[ "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
             git clone --depth=1 --branch ${{ env.SUSFS_BRANCH }} ${{ env.SUSFS_SOURCE }} ../susfs4ksu
           fi
@@ -65,12 +61,10 @@ jobs:
       - name: 集成 KernelSU 和 SUSFS
         working-directory: kernel
         run: |
-          # 复制 KernelSU 内核源码到 drivers/kernelsu
           cp -r ../KernelSU/kernel ./drivers/kernelsu
           echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
           sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           
-          # 在 defconfig 中启用 KSU 和 SUSFS
           DEFCONFIG="arch/arm64/configs/dipper-mi845_defconfig"
           echo "CONFIG_KSU=y" >> $DEFCONFIG
           if [[ "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
@@ -81,17 +75,16 @@ jobs:
         if: env.SUSFS_ENABLE == 'true'
         working-directory: kernel
         run: |
-          # 复制 SUSFS 补丁文件
           cp ../susfs4ksu/kernel_patches/fs/* fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* include/linux/
-          # 从 SUSFS_BRANCH 提取版本号（例如 kernel-4.9 -> 4.9）
           KERNEL_VER=$(echo "${{ env.SUSFS_BRANCH }}" | sed 's/^kernel-//')
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel-${KERNEL_VER}.patch ./
           
-          # 应用内核补丁
           patch -p1 < 50_add_susfs_in_kernel-${KERNEL_VER}.patch || true
           
-          # 应用 KernelSU 的 SUSFS 补丁
+          # 修复 fdinfo.c 中的变量名错误
+          sed -i '144s/mask,/mark->mask,/' fs/notify/fdinfo.c
+          
           cd ../KernelSU/
           cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./
           patch -p1 < 10_enable_susfs_for_ksu.patch || true
