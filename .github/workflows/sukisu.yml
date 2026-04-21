@@ -1,4 +1,4 @@
-name: 编译内核 (KSU + SUSFS | 源码集成 | Clang)
+name: 编译内核 (sukisu + SUSFS | 源码集成 | Clang)
 
 on:
   push:
