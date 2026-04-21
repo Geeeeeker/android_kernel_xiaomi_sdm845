@@ -1,0 +1,249 @@
+name: 编译内核 (KSU + SUSFS | 源码集成 | Clang)
+
+on:
+  push:
+    branches: [lineage-22.2-sukisu-susfs]
+  pull_request:
+    branches: [lineage-22.2-sukisu-susfs]
+  workflow_dispatch:
+    inputs:
+      feature_rtl8188eu:
+        description: '集成 RTL8188EU 无线网卡驱动 (从外部仓库复制)'
+        type: boolean
+        default: false
+      create_release:
+        description: '创建 GitHub Release (仅当手动触发时生效)'
+        type: boolean
+        default: true
+
+env:
+  CLANG_URL: https://github.com/Geeeeeker/boot/releases/download/clang-prebuilts-20260319-031015/clang-r498229b.tar.gz
+  RTL8188EU_REPO: https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845.git
+  RTL8188EU_BRANCH: master
+  ANY_KERNEL3_REPO: https://github.com/osm0sis/AnyKernel3
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 编译内核 - ${{ matrix.device }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        device: [dipper, ursa, equuleus, beryllium, perseus, polaris]
+
+    steps:
+      - name: 安装依赖包
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            ccache \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi \
+            gcc-arm-linux-gnueabi \
+            flex bison bc \
+            libssl-dev \
+            p7zip-full \
+            jq
+
+      - name: 检出内核源码
+        uses: actions/checkout@v4
+        with:
+          repository: wxx9248/android_kernel_xiaomi_sdm845
+          ref: lineage-22.2-sukisu-susfs
+          submodules: recursive
+          path: kernel
+
+      - name: 集成 RTL8188EU 驱动 (可选)
+        if: github.event.inputs.feature_rtl8188eu == 'true'
+        working-directory: kernel
+        run: |
+          git clone --depth=1 --branch ${{ env.RTL8188EU_BRANCH }} ${{ env.RTL8188EU_REPO }} rtl8188eus-repo
+          cp -r rtl8188eus-repo/drivers/rtl8188eus drivers/
+          echo 'obj-$(CONFIG_RTL8188EU) += rtl8188eus/' >> drivers/Makefile
+          echo 'source "drivers/rtl8188eus/Kconfig"' >> drivers/Kconfig
+          rm -rf rtl8188eus-repo
+
+      - name: 缓存 Clang 工具链
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: clang
+          key: clang-r498229b
+
+      - name: 下载并解压 Clang
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p clang
+          curl -LSs "${{ env.CLANG_URL }}" | tar xz -C clang
+
+      - name: 配置 ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: kernel-${{ matrix.device }}
+          restore-keys: kernel-${{ matrix.device }}
+          max-size: 5G
+
+      - name: 配置内核 (merge_config + olddefconfig)
+        working-directory: kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export O=out
+
+          mkdir -p out
+
+          # 合并配置文件
+          ./scripts/kconfig/merge_config.sh -m -O out \
+            arch/arm64/configs/vendor/xiaomi/mi845_defconfig \
+            arch/arm64/configs/vendor/xiaomi/${{ matrix.device }}.config \
+            arch/arm64/configs/kernelsu.config \
+            arch/arm64/configs/gcc-compat.config
+
+          # 补齐缺失符号
+          make O=out ARCH=arm64 olddefconfig
+
+          # 若启用 RTL8188EU，则追加配置
+          if [[ "${{ github.event.inputs.feature_rtl8188eu }}" == "true" ]]; then
+            echo "CONFIG_RTL8188EU=y" >> out/.config
+            make O=out ARCH=arm64 olddefconfig
+          fi
+
+      - name: 编译内核
+        working-directory: kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export KBUILD_BUILD_USER=${{ github.repository_owner }}
+          export KBUILD_BUILD_HOST=github-runner
+          export KBUILD_BUILD_TIMESTAMP=$(date -u -d "@$(git log -1 --format=%at)" +"%a %b %d %H:%M:%S %Z %Y")
+
+          make -j$(nproc) \
+            O=out \
+            ARCH=arm64 \
+            CC="ccache clang" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1
+
+      - name: 获取内核版本字符串
+        id: kernel_version
+        run: |
+          KERNEL_VERSION=$(cat kernel/out/include/config/kernel.release)
+          echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
+          echo "kernel_version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+
+      - name: 准备 AnyKernel3 目录
+        run: |
+          git clone ${{ env.ANY_KERNEL3_REPO }} --depth=1 ak3
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/
+          cp kernel/out/arch/arm64/boot/dtbo.img ak3/ 2>/dev/null || true
+
+      - name: 生成 AnyKernel3 安装脚本
+        working-directory: ak3
+        run: |
+          cat > anykernel.sh << 'EOF'
+          properties() { '
+          kernel.string=KernelSU + SUSFS for ${{ matrix.device }} | ${{ env.KERNEL_VERSION }}
+          device.name1=${{ matrix.device }}
+          do.devicecheck=1
+          '; }
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          is_slot_device=auto;
+          block=auto;
+          . tools/ak3-core.sh;
+          split_boot;
+          flash_boot;
+          EOF
+
+      - name: 打包 AnyKernel3 ZIP
+        run: |
+          cd ak3
+          ZIP_NAME="AnyKernel3-${{ matrix.device }}-${{ env.KERNEL_VERSION }}.zip"
+          7z a -tzip "../${ZIP_NAME}" * -x!.git -x!.github -x!README.md -x!*placeholder
+          echo "AK3_ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          cd ..
+
+      - name: 生成 boot.img (基于 LineageOS 官方 boot 镜像)
+        run: |
+          git clone https://android.googlesource.com/platform/system/tools/mkbootimg --depth=1 mkbootimg
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb mkbootimg/
+          cd mkbootimg
+
+          # 获取 LineageOS 最新 boot.img
+          boot_url=$(curl -LSs "https://download.lineageos.org/api/v2/devices/${{ matrix.device }}/builds" | jq -r '.[0].files[1].url')
+          curl -LSs "$boot_url" -o boot.img
+
+          # 解包并替换内核
+          mkbootimg_args=$(./unpack_bootimg.py --out out --boot_img boot.img --format mkbootimg)
+          mv Image.gz-dtb out/kernel
+          eval "./mkbootimg.py $mkbootimg_args -o boot-lineage-${{ matrix.device }}.img"
+
+          echo "BOOT_IMG_NAME=boot-lineage-${{ matrix.device }}.img" >> $GITHUB_ENV
+          cd ..
+
+      - name: 上传 AnyKernel3 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.device }}-ak3
+          path: ${{ env.AK3_ZIP_NAME }}
+
+      - name: 上传 boot 镜像
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.device }}-boot
+          path: mkbootimg/${{ env.BOOT_IMG_NAME }}
+
+      - name: 收集并上传内核模块 (如有)
+        run: |
+          mkdir -p modules-out
+          find kernel/out -name "*.ko" -exec cp {} modules-out/ \;
+          if [ "$(ls -A modules-out)" ]; then
+            tar czf kernel-modules-${{ matrix.device }}.tar.gz -C modules-out .
+            echo "MODULES_PACKAGE=kernel-modules-${{ matrix.device }}.tar.gz" >> $GITHUB_ENV
+          fi
+        continue-on-error: true
+
+      - name: 上传内核模块包
+        if: env.MODULES_PACKAGE != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-modules-${{ matrix.device }}
+          path: ${{ env.MODULES_PACKAGE }}
+
+  release:
+    name: 发布 Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'
+    steps:
+      - name: 下载所有构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: kernel-*
+          merge-multiple: true
+
+      - name: 获取当前时间戳
+        id: time
+        run: |
+          echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+          echo "time=$(TZ='Asia/Shanghai' date -u +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rel-${{ steps.time.outputs.timestamp }}
+          name: "Kernel build ${{ steps.time.outputs.time }}"
+          draft: false
+          prerelease: true
+          files: |
+            artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
