@@ -1,4 +1,4 @@
-name: 编译内核 (KSU v0.9.5 + SUSFS + 多特性可选 | Clang r498229b)
+name: 编译内核 (sukisu + SUSFS + 多特性可选 | Clang r498229b)
 
 on:
   push:
