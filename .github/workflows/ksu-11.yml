@@ -442,14 +442,10 @@ jobs:
           echo "time=$(TZ='Asia/Shanghai' date -u +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
           echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
 
-      - name: 发布到 GitHub Release
+      - name: 发布
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          draft: false
+          tag_name: rel-${{ steps.time.outputs.timestamp }}
+          name: Kernel build ${{ steps.time.outputs.time }}
           prerelease: ${{ startsWith(github.ref_name, 'dev/') }}
-          files: |
-            kernel/*
-            usbip/usbip-arm64-bundle.tar.gz
-            manager/*.apk
+          files: artifacts/*
