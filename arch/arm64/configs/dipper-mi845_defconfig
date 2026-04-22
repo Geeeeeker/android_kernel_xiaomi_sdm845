@@ -1,7 +1,8 @@
+# ====== GCC编译相关项目 ======
 # CONFIG_MODVERSIONS is not set
 # CONFIG_CC_WERROR is not set
 CONFIG_SECTION_MISMATCH_WARN_ONLY=y
-
+# ====== DOCKER补充，需要关闭的项目 ======
 # CONFIG_CFS_BANDWIDTH is not set
 # CONFIG_DOCKER_STATISTICS is not set
 # CONFIG_BLK_DEV_THROTTLING is not set
