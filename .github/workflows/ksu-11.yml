@@ -166,40 +166,31 @@ jobs:
               patch -p0 < utils/xt_qtaguid.patch
           fi
 
-      # 移除条件判断，默认集成 RTL8188EU 驱动
-      - name: 集成 RTL8188EU 驱动源码到内核树 (编译进内核)
+      - name: 集成 RTL8188EU 驱动 (编译进内核)
         working-directory: kernel
         run: |
-          mkdir -p drivers/net/wireless/realtek/rtl8188eu
-          git clone --depth=1 https://github.com/lwfinger/rtl8188eu.git drivers/net/wireless/realtek/rtl8188eu
-          rm -rf drivers/net/wireless/realtek/rtl8188eu/.git
+          # 克隆指定的驱动仓库
+          git clone --depth=1 --branch master https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845.git rtl8188eus-repo
           
-          if [ ! -f drivers/net/wireless/realtek/rtl8188eu/Kconfig ]; then
-            cat > drivers/net/wireless/realtek/rtl8188eu/Kconfig << 'EOF'
-          config RTL8188EU
-          	tristate "Realtek RTL8188EU USB Wireless Network Adapter"
-          	depends on USB && WLAN && CFG80211
-          	select WIRELESS_EXT
-          	select WEXT_PRIV
-          	help
-          	  This is the driver for Realtek RTL8188EU 802.11n USB
-          	  wireless network adapters.
-          EOF
-          fi
+          # 复制驱动源码到内核树
+          cp -r rtl8188eus-repo/drivers/rtl8188eus drivers/
           
-          sed -i '/source "drivers\/net\/wireless\/realtek\/rtlwifi\/Kconfig"/a source "drivers/net/wireless/realtek/rtl8188eu/Kconfig"' drivers/net/wireless/realtek/Kconfig 2>/dev/null || \
-          echo 'source "drivers/net/wireless/realtek/rtl8188eu/Kconfig"' >> drivers/net/wireless/realtek/Kconfig
+          # 修改顶层 Makefile 与 Kconfig，使驱动参与编译
+          echo 'obj-$(CONFIG_RTL8188EU) += rtl8188eus/' >> drivers/Makefile
+          echo 'source "drivers/rtl8188eus/Kconfig"' >> drivers/Kconfig
           
-          sed -i '/obj-\$(CONFIG_RTLWIFI)\t\t+= rtlwifi\//a obj-\$(CONFIG_RTL8188EU)\t\t+= rtl8188eu/' drivers/net/wireless/realtek/Makefile 2>/dev/null || \
-          echo 'obj-$(CONFIG_RTL8188EU)		+= rtl8188eu/' >> drivers/net/wireless/realtek/Makefile
-          # 修复 cfg80211_roamed API 不兼容问题
-          cd drivers/net/wireless/realtek/rtl8188eu
-          sed -i '/^#else$/,/^#endif \/\*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)\*\// {
-            /cfg80211_roamed(padapter->pnetdev/ {
-              :a
-              N
-              /);/!ba
-              s/.*cfg80211_roamed.*\n.*\n.*\n.*\n.*\n.*\n.*\n.*);/\
+          # 清理临时目录
+          rm -rf rtl8188eus-repo
+          
+          # 进入驱动目录，修复 cfg80211_roamed API 不兼容问题（高版本内核需要）
+          cd drivers/rtl8188eus
+          if [ -f os_dep/linux/ioctl_cfg80211.c ]; then
+            sed -i '/^#else$/,/^#endif \/\*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)\*\// {
+              /cfg80211_roamed(padapter->pnetdev/ {
+                :a
+                N
+                /);/!ba
+                s/.*cfg80211_roamed.*\n.*\n.*\n.*\n.*\n.*\n.*\n.*);/\
           \t\tstruct cfg80211_roam_info roam_info = {\
           \t\t\t.bssid = cur_network->network.MacAddress,\
           \t\t\t.req_ie = pmlmepriv->assoc_req + sizeof(struct rtw_ieee80211_hdr_3addr) + 2,\
@@ -208,8 +199,9 @@ jobs:
           \t\t\t.resp_ie_len = pmlmepriv->assoc_rsp_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 6,\
           \t\t};\
           \t\tcfg80211_roamed(padapter->pnetdev, \&roam_info, GFP_ATOMIC);/
-            }
-          }' os_dep/linux/ioctl_cfg80211.c
+              }
+            }' os_dep/linux/ioctl_cfg80211.c
+          fi
 
       - name: 编译内核
         working-directory: kernel
