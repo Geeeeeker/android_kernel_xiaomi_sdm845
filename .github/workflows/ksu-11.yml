@@ -16,6 +16,7 @@ env:
   APATCH_VERSION: 11142
   APATCH_TAG: 11142_166daa0_on_HEAD-release-signed
   MAGISK_CANARY_URL: https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk
+  ANDROID_VERSION: lineage-20.0 # 请根据实际使用的 ROM 版本修改，用于 AnyKernel3 命名
 
 jobs:
   build:
@@ -77,7 +78,6 @@ jobs:
         working-directory: kernel
         run: |
           DEFCONFIG="arch/arm64/configs/dipper-mi845_defconfig"
-
           # 开启 OverlayFS
           echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
           # 禁用 LTO
@@ -87,7 +87,6 @@ jobs:
           echo "CONFIG_LTO_NONE=y" >> $DEFCONFIG
           # 禁用 CC_WERROR
           echo "CONFIG_CC_WERROR=n" >> $DEFCONFIG
-
           # 用户要求的配置选项
           echo "CONFIG_ASHMEM=y" >> $DEFCONFIG
           echo "CONFIG_SYSVIPC=y" >> $DEFCONFIG
@@ -101,21 +100,17 @@ jobs:
           echo "CONFIG_TMPFS=y" >> $DEFCONFIG
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> $DEFCONFIG
           echo "CONFIG_TMPFS_XATTR=y" >> $DEFCONFIG
-
           # USB/IP 配置（编译进内核）
           echo "CONFIG_USBIP_CORE=y" >> $DEFCONFIG
           echo "CONFIG_USBIP_VHCI_HCD=y" >> $DEFCONFIG
           echo "CONFIG_USBIP_HOST=y" >> $DEFCONFIG
-
           # Backlight 支持
           echo "CONFIG_BACKLIGHT_CLASS_DEVICE=y" >> $DEFCONFIG
           echo "CONFIG_BACKLIGHT_QCOM=y" >> $DEFCONFIG
-
           # 开启 zstd 内存压缩（ZRAM 使用 zstd）
           echo "CONFIG_ZRAM=y" >> $DEFCONFIG
           echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> $DEFCONFIG
           echo "CONFIG_CRYPTO_ZSTD=y" >> $DEFCONFIG
-
           # ====== APatch / KernelSU 符号支持（完整） ======
           echo "# APatch & KernelSU symbol support" >> $DEFCONFIG
           echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
@@ -124,10 +119,8 @@ jobs:
           echo "CONFIG_HAVE_KPROBES=y" >> $DEFCONFIG
           echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
           # ==============================================
-
           # 启用 KernelSU 所需的核心选项
           echo "CONFIG_KSU=y" >> $DEFCONFIG
-
           # 基础框架
           echo "CONFIG_USB_SERIAL=y" >> $DEFCONFIG
           echo "CONFIG_USB_SERIAL_CONSOLE=y" >> $DEFCONFIG
@@ -136,7 +129,6 @@ jobs:
           echo "CONFIG_USB_SERIAL_FTDI_SIO=y" >> $DEFCONFIG
           echo "CONFIG_USB_SERIAL_CP210X=y" >> $DEFCONFIG
           echo "CONFIG_USB_SERIAL_PL2303=y" >> $DEFCONFIG
-
           # 替换 MODVERSIONS（KernelSU 需要）
           sed -i 's/CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' $DEFCONFIG
           echo "# CONFIG_MODVERSIONS is not set" >> $DEFCONFIG
@@ -173,12 +165,13 @@ jobs:
           if [ -f net/netfilter/xt_qtaguid.c ]; then
               patch -p0 < utils/xt_qtaguid.patch
           fi
+
+      # 移除条件判断，默认集成 RTL8188EU 驱动
       - name: 集成 RTL8188EU 驱动源码到内核树 (编译进内核)
-        if: github.event.inputs.feature_rtl8188eu == 'true'
         working-directory: kernel
         run: |
           mkdir -p drivers/net/wireless/realtek/rtl8188eu
-          git clone --depth=1 --branch ${{ env.RTL8188EU_BRANCH }} ${{ env.RTL8188EU_REPO }} drivers/net/wireless/realtek/rtl8188eu
+          git clone --depth=1 https://github.com/lwfinger/rtl8188eu.git drivers/net/wireless/realtek/rtl8188eu
           rm -rf drivers/net/wireless/realtek/rtl8188eu/.git
           
           if [ ! -f drivers/net/wireless/realtek/rtl8188eu/Kconfig ]; then
@@ -199,7 +192,6 @@ jobs:
           
           sed -i '/obj-\$(CONFIG_RTLWIFI)\t\t+= rtlwifi\//a obj-\$(CONFIG_RTL8188EU)\t\t+= rtl8188eu/' drivers/net/wireless/realtek/Makefile 2>/dev/null || \
           echo 'obj-$(CONFIG_RTL8188EU)		+= rtl8188eu/' >> drivers/net/wireless/realtek/Makefile
-
           # 修复 cfg80211_roamed API 不兼容问题
           cd drivers/net/wireless/realtek/rtl8188eu
           sed -i '/^#else$/,/^#endif \/\*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)\*\// {
@@ -218,7 +210,7 @@ jobs:
           \t\tcfg80211_roamed(padapter->pnetdev, \&roam_info, GFP_ATOMIC);/
             }
           }' os_dep/linux/ioctl_cfg80211.c
-          
+
       - name: 编译内核
         working-directory: kernel
         run: |
@@ -252,7 +244,7 @@ jobs:
         run: |
           mkdir -p usbip-out/{bin,libs}
           docker run --rm --platform linux/arm64 \
-            --memory=4g \
+            --memory=6g \
             -v ${{ github.workspace }}:/workspace \
             -v ${{ github.workspace }}/usbip-out:/output \
             -w /workspace/kernel \
@@ -339,15 +331,10 @@ jobs:
       - name: 创建 APK 输出目录
         run: mkdir -p apk-output
 
-      - name: 下载 KernelSU Manager APK
+      - name: 下载 KernelSU Manager APK (v0.9.5)
         run: |
-          LATEST_RELEASE_URL=$(curl -s https://github.com/tiann/KernelSU/releases/download/v0.9.5/KernelSU_v0.9.5_11872-release.apk | grep "browser_download_url.*\.apk" | cut -d '"' -f 4)
-          if [ -n "$LATEST_RELEASE_URL" ]; then
-            wget -O apk-output/KernelSU-Manager.apk "$LATEST_RELEASE_URL"
-          else
-            echo "Failed to fetch KernelSU APK."
-            exit 1
-          fi
+          wget -O apk-output/KernelSU-Manager.apk \
+            https://github.com/tiann/KernelSU/releases/download/v0.9.5/KernelSU_v0.9.5_11872-release.apk
 
       - name: 下载 APatch Manager APK
         run: |
@@ -379,7 +366,10 @@ jobs:
           split_boot
           flash_boot
           EOF
-          zip -qr9 Anykernel3-${{ matrix.device }}.zip * -x .git .github README.md *placeholder
+          DATE=$(date +%Y%m%d)
+          ZIP_NAME="anykernel3-${{ matrix.device }}-${{ env.ANDROID_VERSION }}-${DATE}.zip"
+          zip -qr9 "${ZIP_NAME}" * -x .git .github README.md *placeholder
+          mv "${ZIP_NAME}" ../
 
       - name: 打包 (boot.img)
         run: |
@@ -396,7 +386,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ matrix.device }}-ak3
-          path: ak3/Anykernel3-${{ matrix.device }}.zip
+          path: anykernel3-*.zip
 
       - name: 上传 boot 镜像
         uses: actions/upload-artifact@v4
@@ -420,7 +410,7 @@ jobs:
       - name: 获取构建产物
         uses: actions/download-artifact@v4
         with:
-          path: kernel
+          path: artifacts
           pattern: kernel-*
           merge-multiple: true
 
@@ -428,13 +418,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: usbip-arm64-bundle
-          path: usbip
+          path: artifacts/usbip
 
       - name: 获取 APK 合集
         uses: actions/download-artifact@v4
         with:
           name: Manager-APKs
-          path: manager
+          path: artifacts/manager
 
       - name: 获取当前时间
         id: time
