@@ -121,7 +121,7 @@ CONFIG_EXT4_FS_POSIX_ACL=y
 CONFIG_VXLAN=y
 # ====== 瑞昱无线网卡驱动 ======
 CONFIG_RTL8188EU=y
-# ====== K20Pro硬件驱动 ======
+# ====== 小米8硬件驱动 ======
 CONFIG_TOUCHSCREEN_ST_FTS_V521=y
 CONFIG_I2C_BY_DMA=y
 CONFIG_SECURE_TOUCH=y
