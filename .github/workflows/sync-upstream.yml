@@ -3,8 +3,8 @@ name: Sync with LineageOS Upstream
 
 on:
   workflow_dispatch:                     # 允许你手动运行
-  schedule:
-    - cron: '0 0 * * *'                  # 可选，每天 UTC 00:00 自动运行
+#  schedule:
+#    - cron: '0 0 * * *'                  # 可选，每天 UTC 00:00 自动运行
 
 jobs:
   sync:
