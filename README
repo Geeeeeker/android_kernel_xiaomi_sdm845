@@ -1,4 +1,29 @@
-        Linux kernel release 4.x <http://kernel.org/>
+sdm845
+https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845_419
+https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845
+
+RvKernel-Mi845-beryllium-v1.1-Lindroid.zip
+https://downloads.sourceforge.net/project/rve-rom/RvKernel/Mi845/RvKernel-Mi845-beryllium-v1.1-Lindroid.zip?ts=gAAAAABqFByU3h8t7AwSM0NunjqSBHjQAj_B_g7FsLw0ZejaRS-IJH-VeE1oOwdzlkGPwYeejk0-qsrHZQ-EgJnz7GeGxTEzkg%3D%3D&use_mirror=master&r=https%3A%2F%2Fsourceforge.net%2Fprojects%2Frve-rom%2Ffiles%2FRvKernel%2FMi845%2FRvKernel-Mi845-beryllium-v1.1-Lindroid.zip%2Fdownload
+
+https://github.com/wxx9248/android_kernel_xiaomi_sdm845
+
+sdm845安卓15susfs
+https://github.com/msxy2318/LXC-Docker_kernel_xiaomi_mix2s_lineageOS/blob/lineage-22.2/.github/workflows/main.yml
+https://github.com/kisodev/android_kernel_xiaomi_sdm845
+https://github.com/LineageOS/android_kernel_xiaomi_sdm845/commit/a5fccd147cbb74a0eba0cec67607e8c1719e28d7#diff-467e0c8078a110229a9cf32a399770b10c53b08e98f90762d97afe2665ccb3bf
+[ROM][15.0.0_r30][DISCONTINUED] PixelOS for Xiaomi Mi 8 [AOSP][UNOFFICIAL]
+https://xdaforums.com/t/rom-15-0-0_r30-discontinued-pixelos-for-xiaomi-mi-8-aosp-unofficial.4726694/
+利用Github来编译TWRP
+https://blog.mocn.top/posts/fa842843/
+SDK Platform Tools release
+https://developer.android.google.cn/tools/releases/platform-tools?hl=en
+Docker-enabled custom kernel for Redmi K20 Pro (Android 16) 
+https://github.com/xiziphus/kernel_xiaomi_raphael_antigravity
+LXC-Docker_kernel_xiaomi_mix2s_lineageOS
+https://github.com/msxy2318/LXC-Docker_kernel_xiaomi_mix2s_lineageOS
+
+
+Linux kernel release 4.x <http://kernel.org/>
 
 These are the release notes for Linux version 4.  Read them carefully,
 as they tell you what this is all about, explain how to install the
