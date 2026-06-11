@@ -1,4 +1,70 @@
-sdm845
+[ROM][16][SukiSU]AviumUI 16.2 QPR2 非官方版
+
+https://github.com/duckyduckG/rom_releases/releases/tag/Lineage-23.2-xm-sdm845-2026.02.03
+https://xdaforums.com/t/rom-16-sukisu-aviumui-16-2-qpr2-unofficial.4779032/
+https://github.com/duckyduckG/android_kernel_xiaomi_sdm845_419/tree/lineage-23.2_xiaomi
+
+
+AviumUI 16.2
+
+作者：@ashkoregf
+基于 LineageOS 23.2 QPR2 非官方版，来自@duckyduck616
+Android 16
+内核 4.19.325
+EROFS文件系统
+GApps包括
+ROOT SukiSU
+
+安装方法：
+0. 所有备份到PC1
+.刷入原厂 MIUI CN/GL/RU ROM，并进行了首次启动。
+2. 重启为 fastboot 并刷机 推荐通过命令 fastboot flash recovery recovery_dipper-eng.img
+进行恢复 3.重启恢复（电源 + 音量提升）
+4.选择应用 更新 - 从 ADB
+应用 5.通过命令 在 PC 上通过命令 adb 侧载刷写 ROM filename.zip
+它会叠加到 47% - 这样没问题！看看手机！
+6. 完成后选择恢复出厂设置并确认。
+现在你可以重启到系统了。
+
+漏洞与修复：
+FaceUnlock 已经修复，但红外模块没有参与。
+OpenEuicc已启用，LHDC也已移植。对于LHDC，你只需在开发者设置中启用“禁用蓝牙A2DP硬件下载”选项，否则无法使用。
+通过蓝牙播放媒体时，把音量调到0后，当你开始调大音量时，需要暂停播放才能再次听到声音。
+DT2W：仅在AOD上有效，但无法在完全黑屏上使用。
+内置的PIF目前无法使用，但这是AviumUI命令的一个bug。
+更新：作者悲伤地说：“我只是寒假期间做的个人项目。开学后我没时间维护，所以别指望会有定期更新。”
+
+从GDrive下载：
+原版和GApps版本，数据加密
+原版和GApps build with Decrypted data
+boot.img without SukiSU
+Recommender recovery
+
+Kernel Source code on GitHub
+
+
+[ROM][A16][北极星]Axion 2.3 TELOS 20260118非官方
+https://github.com/Luoxue520QwQ/LineageOS_Xiaomi_Mi_Mix_2S/releases/tag/20251203
+https://github.com/Luoxue520QwQ/AxionOS_Xiaomi_Mi_Mix_2S
+https://github.com/Luoxue520QwQ/virtiso-arm
+...给你：
+
+https://github.com/Luoxue520QwQ/AxionOS_Xiaomi_Mi_Mix_2S/releases/tag/2.3-TELOS
+
+......我用的是Orange Fox 11.4恢复......
+......ROM非常棒！
+
+......最重要：Wi-Fi运行得非常完美！
+......根本没有WiFi调制解调器的bug！
+......正因为如此，所有（！）A15和A14的ROM都没用！
+
+......跳过所有无用的A14和A15，安装A16......
+......终于，发展正在继续，感谢这位中国人罗雪!!sdm845
+
+
+
+
+
 https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845_419
 https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845
 
